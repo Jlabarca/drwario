@@ -1,0 +1,94 @@
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using DrWario.Runtime;
+using DrWario.Editor.Analysis.LLM;
+using UnityEngine;
+
+namespace DrWario.Editor.Analysis.Rules
+{
+    /// <summary>
+    /// IAnalysisRule implementation that sends profiling data to an LLM for deep analysis.
+    /// Gracefully returns empty if LLM is not configured, unavailable, or fails.
+    /// </summary>
+    public class AIAnalysisRule : IAnalysisRule
+    {
+        public string Category => "AI";
+        public string RuleId => "AI_LLM";
+
+        private readonly LLMConfig _config;
+        private List<DiagnosticFinding> _ruleFindings;
+
+        /// <summary>
+        /// Pre-analysis findings from deterministic rules, provided for LLM context.
+        /// Must be set before calling Analyze().
+        /// </summary>
+        public List<DiagnosticFinding> RuleFindings
+        {
+            get => _ruleFindings;
+            set => _ruleFindings = value;
+        }
+
+        /// <summary>
+        /// Set after Analyze() if the LLM returned an error.
+        /// </summary>
+        public string LastError { get; private set; }
+
+        /// <summary>
+        /// True if the last Analyze() call successfully received LLM findings.
+        /// </summary>
+        public bool LastCallSucceeded { get; private set; }
+
+        public AIAnalysisRule(LLMConfig config)
+        {
+            _config = config;
+        }
+
+        public List<DiagnosticFinding> Analyze(ProfilingSession session)
+        {
+            LastError = null;
+            LastCallSucceeded = false;
+
+            if (!_config.IsConfigured)
+            {
+                LastError = "LLM not configured or disabled.";
+                return new List<DiagnosticFinding>();
+            }
+
+            // Run async LLM call synchronously in editor context
+            var task = AnalyzeAsync(session);
+            task.Wait();
+            return task.Result;
+        }
+
+        private async Task<List<DiagnosticFinding>> AnalyzeAsync(ProfilingSession session)
+        {
+            var client = new LLMClient(_config);
+
+            string systemPrompt = LLMPromptBuilder.BuildSystemPrompt();
+            string userPrompt = LLMPromptBuilder.BuildUserPrompt(session, _ruleFindings ?? new List<DiagnosticFinding>());
+
+            Debug.Log($"[DrWario] LLM prompt: {userPrompt.Length} chars ({EstimateTokens(userPrompt)} est. tokens)");
+
+            var response = await client.SendAsync(systemPrompt, userPrompt);
+
+            if (!response.IsSuccess)
+            {
+                LastError = response.ErrorMessage;
+                Debug.LogWarning($"[DrWario] LLM analysis failed: {response.ErrorMessage}");
+                return new List<DiagnosticFinding>();
+            }
+
+            var findings = LLMResponseParser.Parse(response.Content);
+            LastCallSucceeded = findings.Count > 0;
+
+            Debug.Log($"[DrWario] LLM returned {findings.Count} findings.");
+            return findings;
+        }
+
+        private static int EstimateTokens(string text)
+        {
+            // Rough estimate: ~4 chars per token for English/JSON
+            return text.Length / 4;
+        }
+    }
+}
