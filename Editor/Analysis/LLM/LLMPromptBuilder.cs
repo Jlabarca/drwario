@@ -37,12 +37,91 @@ Focus on:
 
 Return ONLY a JSON array of findings. No markdown, no preamble, no explanation outside the JSON.";
 
+        private const string AskDoctorSystemPrompt = @"You are DrWario, an expert Unity runtime performance consultant.
+
+You have deep knowledge of:
+- Unity's rendering pipeline (URP, HDRP, Built-in), draw call batching, GPU instancing, occlusion culling
+- Unity's memory model: managed heap (Mono/IL2CPP), native allocations, texture/mesh VRAM, AssetBundle memory
+- Garbage collection: Boehm GC behavior, incremental GC, allocation patterns that trigger collections
+- Frame timing: CPU-bound vs GPU-bound detection, VSync impact, FrameTimingManager accuracy
+- Boot/loading: scene loading, addressables, async operations, shader warmup, preloading strategies
+- Networking: packet batching, interpolation, client-side prediction, bandwidth optimization
+- Platform constraints: mobile thermal throttling, WebGL memory limits, console fixed memory budgets
+
+Analyze the profiling data provided. Be specific — reference actual numbers from the data.
+Give actionable recommendations with concrete Unity API calls, settings, or code patterns.
+Prioritize by impact: fix the biggest bottleneck first.
+If data is insufficient for a definitive answer, say so and suggest what additional profiling to do.";
+
         public static string BuildSystemPrompt()
         {
             if (string.IsNullOrEmpty(AdditionalContext))
                 return BaseSystemPrompt;
 
             return BaseSystemPrompt + "\n\nAdditional project context:\n" + AdditionalContext;
+        }
+
+        public static string BuildAskDoctorSystemPrompt()
+        {
+            if (string.IsNullOrEmpty(AdditionalContext))
+                return AskDoctorSystemPrompt;
+
+            return AskDoctorSystemPrompt + "\n\nAdditional project context:\n" + AdditionalContext;
+        }
+
+        /// <summary>
+        /// Builds a complete standalone prompt (system + data + question) suitable for
+        /// copying to clipboard and pasting into any LLM chat interface.
+        /// </summary>
+        public static string BuildFullPromptForClipboard(
+            ProfilingSession session,
+            DiagnosticReport report,
+            string userQuestion)
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("=== SYSTEM CONTEXT ===");
+            sb.AppendLine(BuildAskDoctorSystemPrompt());
+            sb.AppendLine();
+
+            if (session != null && session.FrameCount > 0)
+            {
+                var findings = report?.Findings ?? new List<DiagnosticFinding>();
+                sb.AppendLine("=== PROFILING DATA ===");
+                sb.AppendLine(BuildUserPrompt(session, findings));
+                sb.AppendLine();
+            }
+
+            if (report != null)
+            {
+                sb.AppendLine("=== ANALYSIS REPORT ===");
+                sb.AppendLine($"Overall Grade: {report.OverallGrade} | Health Score: {report.HealthScore:F0}/100");
+                sb.AppendLine($"Total Findings: {report.Findings.Count}");
+                sb.AppendLine();
+
+                foreach (var kv in report.CategoryGrades)
+                    sb.AppendLine($"  [{kv.Value}] {kv.Key}");
+                sb.AppendLine();
+
+                sb.AppendLine("Findings (sorted by severity):");
+                foreach (var f in report.Findings.OrderByDescending(f => f.Severity))
+                {
+                    sb.AppendLine($"  [{f.Severity}] {f.Title}");
+                    sb.AppendLine($"    {f.Description}");
+                    sb.AppendLine($"    Recommendation: {f.Recommendation}");
+                    if (f.Metric != 0 || f.Threshold != 0)
+                        sb.AppendLine($"    Metric: {f.Metric:F1} (threshold: {f.Threshold:F1})");
+                    sb.AppendLine();
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(userQuestion))
+            {
+                sb.AppendLine("=== QUESTION ===");
+                sb.AppendLine(userQuestion);
+            }
+
+            return sb.ToString();
         }
 
         public static string BuildUserPrompt(ProfilingSession session, List<DiagnosticFinding> ruleFindings)

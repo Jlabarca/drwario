@@ -26,6 +26,9 @@ namespace DrWario.Editor
         private TextField _askInput;
         private Label _askResponseLabel;
         private Button _askBtn;
+        private Button _copyResponseBtn;
+        private Button _copyPromptBtn;
+        private string _lastFullPrompt;
         private VisualElement _sparklineElement;
         private float[] _sparklineData;
         private Button _startBtn, _stopBtn, _analyzeBtn;
@@ -550,6 +553,18 @@ namespace DrWario.Editor
                 return;
             }
 
+            // Copy Report button
+            var copyReportBtn = new Button(() =>
+            {
+                EditorGUIUtility.systemCopyBuffer = _lastReport.ExportText();
+                Debug.Log("[DrWario] Report copied to clipboard.");
+                _statusLabel.text = "Report copied to clipboard.";
+                _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
+            }) { text = "Copy Report to Clipboard" };
+            copyReportBtn.style.height = 24;
+            copyReportBtn.style.marginBottom = 8;
+            _findingsContainer.Add(copyReportBtn);
+
             foreach (var f in _lastReport.Findings.OrderByDescending(f => f.Severity))
             {
                 var card = new VisualElement();
@@ -606,6 +621,27 @@ namespace DrWario.Editor
                     { style = { color = Color.green, marginTop = 10, fontSize = 14 } });
                 return;
             }
+
+            // Copy Recommendations button
+            var copyRecsBtn = new Button(() =>
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"DrWario Recommendations — Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100)");
+                sb.AppendLine();
+                foreach (var f in _lastReport.Findings.OrderByDescending(f => f.Severity))
+                {
+                    sb.AppendLine($"[{f.Severity}] {f.Title} ({f.Category})");
+                    sb.AppendLine($"  → {f.Recommendation}");
+                    sb.AppendLine();
+                }
+                EditorGUIUtility.systemCopyBuffer = sb.ToString();
+                Debug.Log("[DrWario] Recommendations copied to clipboard.");
+                _statusLabel.text = "Recommendations copied to clipboard.";
+                _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
+            }) { text = "Copy Recommendations to Clipboard" };
+            copyRecsBtn.style.height = 24;
+            copyRecsBtn.style.marginBottom = 8;
+            _recommendationsContainer.Add(copyRecsBtn);
 
             // Group by category
             var grouped = _lastReport.Findings
@@ -690,10 +726,17 @@ namespace DrWario.Editor
             _askBtn.style.backgroundColor = new StyleColor(new Color(0.2f, 0.35f, 0.55f));
             btnRow.Add(_askBtn);
 
+            _copyPromptBtn = new Button(OnCopyPrompt) { text = "Copy Prompt" };
+            _copyPromptBtn.style.height = 28;
+            _copyPromptBtn.tooltip = "Copy the full prompt (system context + profiling data + question) to clipboard for use with any LLM";
+            btnRow.Add(_copyPromptBtn);
+
             var clearBtn = new Button(() =>
             {
                 _askInput.value = "";
                 _askResponseLabel.text = "";
+                _askResponseLabel.style.display = DisplayStyle.None;
+                _copyResponseBtn.style.display = DisplayStyle.None;
             }) { text = "Clear" };
             clearBtn.style.height = 28;
             btnRow.Add(clearBtn);
@@ -725,18 +768,66 @@ namespace DrWario.Editor
 
             foreach (var ex in examples)
             {
+                var exRow = new VisualElement();
+                exRow.style.flexDirection = FlexDirection.Row;
+                exRow.style.marginBottom = 2;
+
                 var exBtn = new Button(() => _askInput.value = ex) { text = ex };
                 exBtn.style.height = 22;
                 exBtn.style.fontSize = 10;
+                exBtn.style.flexGrow = 1;
                 exBtn.style.unityTextAlign = TextAnchor.MiddleLeft;
                 exBtn.style.backgroundColor = new StyleColor(new Color(0.15f, 0.15f, 0.18f));
-                exBtn.style.marginBottom = 2;
-                examplesCard.Add(exBtn);
+                exRow.Add(exBtn);
+
+                var capturedEx = ex;
+                var exCopyBtn = new Button(() => OnCopyPromptForQuestion(capturedEx)) { text = "Copy" };
+                exCopyBtn.style.height = 22;
+                exCopyBtn.style.width = 42;
+                exCopyBtn.style.fontSize = 9;
+                exCopyBtn.tooltip = "Copy full prompt for this question to clipboard";
+                exRow.Add(exCopyBtn);
+
+                examplesCard.Add(exRow);
             }
 
             _askContainer.Add(examplesCard);
 
-            // Response area
+            // Response area with copy button
+            var responseHeader = new VisualElement();
+            responseHeader.style.flexDirection = FlexDirection.Row;
+            responseHeader.style.justifyContent = Justify.FlexEnd;
+            responseHeader.style.marginBottom = 2;
+
+            _copyResponseBtn = new Button(() =>
+            {
+                if (!string.IsNullOrEmpty(_askResponseLabel.text))
+                {
+                    EditorGUIUtility.systemCopyBuffer = _askResponseLabel.text;
+                    Debug.Log("[DrWario] Response copied to clipboard.");
+                }
+            }) { text = "Copy Response" };
+            _copyResponseBtn.style.height = 22;
+            _copyResponseBtn.style.fontSize = 10;
+            _copyResponseBtn.style.display = DisplayStyle.None;
+            responseHeader.Add(_copyResponseBtn);
+
+            var copyLastPromptBtn = new Button(() =>
+            {
+                if (!string.IsNullOrEmpty(_lastFullPrompt))
+                {
+                    EditorGUIUtility.systemCopyBuffer = _lastFullPrompt;
+                    Debug.Log("[DrWario] Last prompt copied to clipboard.");
+                }
+            }) { text = "Copy Last Prompt" };
+            copyLastPromptBtn.style.height = 22;
+            copyLastPromptBtn.style.fontSize = 10;
+            copyLastPromptBtn.style.display = DisplayStyle.None;
+            copyLastPromptBtn.name = "copy-last-prompt-btn";
+            responseHeader.Add(copyLastPromptBtn);
+
+            _askContainer.Add(responseHeader);
+
             _askResponseLabel = new Label("");
             _askResponseLabel.style.whiteSpace = WhiteSpace.Normal;
             _askResponseLabel.style.fontSize = 12;
@@ -748,9 +839,37 @@ namespace DrWario.Editor
             _askResponseLabel.style.paddingRight = 10;
             _askResponseLabel.style.minHeight = 100;
             _askResponseLabel.style.display = DisplayStyle.None;
+            _askResponseLabel.selection.isSelectable = true;
             _askContainer.Add(_askResponseLabel);
 
             return scroll;
+        }
+
+        private void OnCopyPrompt()
+        {
+            string question = _askInput.value;
+            if (string.IsNullOrWhiteSpace(question))
+            {
+                EditorUtility.DisplayDialog("DrWario", "Enter a question first.", "OK");
+                return;
+            }
+
+            var session = RuntimeCollector.ActiveSession;
+            string prompt = LLMPromptBuilder.BuildFullPromptForClipboard(session, _lastReport, question);
+            EditorGUIUtility.systemCopyBuffer = prompt;
+            Debug.Log($"[DrWario] Full prompt copied to clipboard ({prompt.Length} chars).");
+            _statusLabel.text = $"Prompt copied to clipboard ({prompt.Length} chars, ~{prompt.Length / 4} tokens est.)";
+            _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
+        }
+
+        private void OnCopyPromptForQuestion(string question)
+        {
+            var session = RuntimeCollector.ActiveSession;
+            string prompt = LLMPromptBuilder.BuildFullPromptForClipboard(session, _lastReport, question);
+            EditorGUIUtility.systemCopyBuffer = prompt;
+            Debug.Log($"[DrWario] Prompt for \"{question}\" copied to clipboard ({prompt.Length} chars).");
+            _statusLabel.text = $"Prompt copied ({prompt.Length} chars). Paste into any LLM chat.";
+            _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
         }
 
         private async void OnAskDoctor()
@@ -763,8 +882,10 @@ namespace DrWario.Editor
 
             if (!_llmConfig.IsConfigured)
             {
+                // If LLM not configured, copy prompt to clipboard instead
+                OnCopyPrompt();
                 EditorUtility.DisplayDialog("DrWario",
-                    "LLM is not configured. Go to LLM Settings and enable AI Analysis with a valid API key.", "OK");
+                    "LLM is not configured. The full prompt has been copied to your clipboard — paste it into any LLM chat (Claude, ChatGPT, etc.).\n\nTo use the built-in AI, go to LLM Settings and configure a provider.", "OK");
                 return;
             }
 
@@ -772,20 +893,9 @@ namespace DrWario.Editor
             _askResponseLabel.style.display = DisplayStyle.Flex;
             _askResponseLabel.text = "Thinking...";
             _askResponseLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
+            _copyResponseBtn.style.display = DisplayStyle.None;
 
-            // Build context from current session + report
-            var contextSb = new System.Text.StringBuilder();
-            contextSb.AppendLine("You are an expert Unity performance consultant.");
-            contextSb.AppendLine("Answer the user's question based on the profiling data provided.");
-            contextSb.AppendLine("Be specific, actionable, and reference actual numbers from the data.");
-            contextSb.AppendLine("Keep your answer concise (2-4 paragraphs max).");
-
-            if (!string.IsNullOrEmpty(LLMPromptBuilder.AdditionalContext))
-            {
-                contextSb.AppendLine();
-                contextSb.AppendLine("Additional project context:");
-                contextSb.AppendLine(LLMPromptBuilder.AdditionalContext);
-            }
+            string systemPrompt = LLMPromptBuilder.BuildAskDoctorSystemPrompt();
 
             var userSb = new System.Text.StringBuilder();
 
@@ -802,18 +912,27 @@ namespace DrWario.Editor
 
             if (_lastReport != null)
             {
-                userSb.AppendLine($"=== ANALYSIS REPORT ===");
+                userSb.AppendLine("=== ANALYSIS REPORT ===");
                 userSb.AppendLine($"Grade: {_lastReport.OverallGrade} | Score: {_lastReport.HealthScore:F0}/100");
-                foreach (var f in _lastReport.Findings)
+                foreach (var kv in _lastReport.CategoryGrades)
+                    userSb.AppendLine($"  [{kv.Value}] {kv.Key}");
+                userSb.AppendLine();
+                foreach (var f in _lastReport.Findings.OrderByDescending(f => f.Severity))
+                {
                     userSb.AppendLine($"- [{f.Severity}] {f.Title}: {f.Description}");
+                    userSb.AppendLine($"  Recommendation: {f.Recommendation}");
+                }
                 userSb.AppendLine();
             }
 
-            userSb.AppendLine("=== USER QUESTION ===");
+            userSb.AppendLine("=== QUESTION ===");
             userSb.AppendLine(_askInput.value);
 
+            // Store full prompt for copy
+            _lastFullPrompt = "=== SYSTEM ===\n" + systemPrompt + "\n\n" + userSb;
+
             var client = new LLMClient(_llmConfig);
-            var response = await client.SendAsync(contextSb.ToString(), userSb.ToString());
+            var response = await client.SendAsync(systemPrompt, userSb.ToString());
 
             _askBtn.SetEnabled(true);
 
@@ -821,11 +940,15 @@ namespace DrWario.Editor
             {
                 _askResponseLabel.text = response.Content;
                 _askResponseLabel.style.color = new Color(0.8f, 0.8f, 0.8f);
+                _copyResponseBtn.style.display = DisplayStyle.Flex;
+                var lastPromptBtn = this.Q<Button>("copy-last-prompt-btn");
+                if (lastPromptBtn != null) lastPromptBtn.style.display = DisplayStyle.Flex;
             }
             else
             {
                 _askResponseLabel.text = $"Error: {response.ErrorMessage}";
                 _askResponseLabel.style.color = new Color(0.9f, 0.25f, 0.25f);
+                _copyResponseBtn.style.display = DisplayStyle.None;
             }
         }
 
