@@ -59,7 +59,7 @@ namespace DrWario.Runtime
                 _triangles = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Triangles Count", 1);
                 _vertices = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Vertices Count", 1);
 
-                _gcAllocCount = ProfilerRecorder.StartNew(ProfilerCategory.GarbageCollector, "GC Allocated In Frame", 1);
+                _gcAllocCount = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocation In Frame Count", 1);
                 _gcAllocBytes = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", 1);
                 _totalUsedMemory = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "Total Used Memory", 1);
                 _textureMemory = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "Texture Memory", 1);
