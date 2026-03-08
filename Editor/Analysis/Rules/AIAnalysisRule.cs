@@ -45,22 +45,14 @@ namespace DrWario.Editor.Analysis.Rules
 
         public List<DiagnosticFinding> Analyze(ProfilingSession session)
         {
-            LastError = null;
+            // Synchronous stub — deterministic rules only.
+            // For AI analysis, use AnalyzeAsync() via AnalysisEngine.AnalyzeAsync().
+            LastError = "Use AnalyzeAsync() for AI analysis.";
             LastCallSucceeded = false;
-
-            if (!_config.IsConfigured)
-            {
-                LastError = "LLM not configured or disabled.";
-                return new List<DiagnosticFinding>();
-            }
-
-            // Run async LLM call synchronously in editor context
-            var task = AnalyzeAsync(session);
-            task.Wait();
-            return task.Result;
+            return new List<DiagnosticFinding>();
         }
 
-        private async Task<List<DiagnosticFinding>> AnalyzeAsync(ProfilingSession session)
+        public async Task<List<DiagnosticFinding>> AnalyzeAsync(ProfilingSession session)
         {
             var client = new LLMClient(_config);
 

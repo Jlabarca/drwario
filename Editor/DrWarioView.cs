@@ -425,7 +425,7 @@ namespace DrWario.Editor
             _statusLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
         }
 
-        private void OnAnalyze()
+        private async void OnAnalyze()
         {
             var session = RuntimeCollector.ActiveSession;
             if (session == null || session.FrameCount == 0)
@@ -434,22 +434,33 @@ namespace DrWario.Editor
                 return;
             }
 
+            _analyzeBtn.SetEnabled(false);
             _statusLabel.text = "Analyzing...";
             _statusLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
 
             var engine = new AnalysisEngine(_llmConfig);
-            _lastReport = engine.Analyze(session);
 
-            string aiStatus = "";
             if (_llmConfig.IsConfigured)
             {
-                aiStatus = engine.AICallSucceeded
+                // Async path: rules run instantly, then AI runs without blocking
+                _statusLabel.text = "Analyzing... (rule-based done, waiting for AI)";
+                _lastReport = await engine.AnalyzeAsync(session);
+
+                string aiStatus = engine.AICallSucceeded
                     ? " + AI insights"
                     : $" (AI: {engine.AIError ?? "no findings"})";
+
+                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
+            }
+            else
+            {
+                // Sync path: rules only, instant
+                _lastReport = engine.Analyze(session);
+                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings.";
             }
 
-            _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
             _statusLabel.style.color = new Color(0.5f, 0.8f, 1f);
+            _analyzeBtn.SetEnabled(true);
 
             // Auto-save to history
             ReportHistory.Save(_lastReport);

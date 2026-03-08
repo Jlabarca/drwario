@@ -111,6 +111,7 @@ namespace DrWario.Editor.Analysis
             public string unityVersion;
             public char overallGrade;
             public float healthScore;
+            public List<SerializableCategoryGrade> categoryGrades = new();
             public List<SerializableFinding> findings = new();
 
             public SerializableReport(DiagnosticReport r)
@@ -120,6 +121,8 @@ namespace DrWario.Editor.Analysis
                 unityVersion = r.Session.UnityVersion;
                 overallGrade = r.OverallGrade;
                 healthScore = r.HealthScore;
+                foreach (var kv in r.CategoryGrades)
+                    categoryGrades.Add(new SerializableCategoryGrade { category = kv.Key, grade = kv.Value });
                 foreach (var f in r.Findings)
                 {
                     findings.Add(new SerializableFinding
@@ -135,6 +138,13 @@ namespace DrWario.Editor.Analysis
                     });
                 }
             }
+        }
+
+        [Serializable]
+        private class SerializableCategoryGrade
+        {
+            public string category;
+            public char grade;
         }
 
         [Serializable]

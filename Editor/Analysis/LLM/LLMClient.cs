@@ -9,7 +9,7 @@ namespace DrWario.Editor.Analysis.LLM
     public class LLMClient
     {
         private readonly LLMConfig _config;
-        private DateTime _lastRequestTime = DateTime.MinValue;
+        private static DateTime _lastRequestTime = DateTime.MinValue;
         private const int RateLimitSeconds = 10;
 
         public LLMClient(LLMConfig config)
@@ -81,10 +81,10 @@ namespace DrWario.Editor.Analysis.LLM
         public async Task<bool> TestConnectionAsync()
         {
             var result = await SendAsync(
-                "You are a test endpoint. Respond with exactly: {\"status\":\"ok\"}",
+                "You are a test endpoint. Respond with exactly: OK",
                 "Ping"
             );
-            return result.IsSuccess;
+            return result.IsSuccess && !string.IsNullOrEmpty(result.Content);
         }
 
         private string BuildRequestBody(string systemPrompt, string userPrompt)

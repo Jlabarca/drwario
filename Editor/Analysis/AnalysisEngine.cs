@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using DrWario.Runtime;
 using DrWario.Editor.Analysis.LLM;
 using DrWario.Editor.Analysis.Rules;
@@ -32,6 +33,9 @@ namespace DrWario.Editor.Analysis
 
         public void RegisterRule(IAnalysisRule rule) => _rules.Add(rule);
 
+        /// <summary>
+        /// Runs deterministic rules only (fast, synchronous). Does not call LLM.
+        /// </summary>
         public DiagnosticReport Analyze(ProfilingSession session)
         {
             var report = new DiagnosticReport
@@ -40,7 +44,7 @@ namespace DrWario.Editor.Analysis
                 Session = session.Metadata
             };
 
-            // Phase 1: Run deterministic rules
+            // Run deterministic rules (fast)
             foreach (var rule in _rules)
             {
                 var findings = rule.Analyze(session);
@@ -48,19 +52,32 @@ namespace DrWario.Editor.Analysis
                     report.Findings.AddRange(findings);
             }
 
-            // Phase 2: Run AI rule with deterministic findings as context
+            report.ComputeGrades();
+            return report;
+        }
+
+        /// <summary>
+        /// Runs deterministic rules synchronously, then AI analysis asynchronously.
+        /// Never blocks the main thread.
+        /// </summary>
+        public async Task<DiagnosticReport> AnalyzeAsync(ProfilingSession session)
+        {
+            // Phase 1: Run deterministic rules (fast, synchronous)
+            var report = Analyze(session);
+
+            // Phase 2: Run AI rule asynchronously
             if (_aiRule != null)
             {
                 _aiRule.RuleFindings = new List<DiagnosticFinding>(report.Findings);
-                var aiFindings = _aiRule.Analyze(session);
+                var aiFindings = await _aiRule.AnalyzeAsync(session);
                 if (aiFindings != null)
                     report.Findings.AddRange(aiFindings);
+
+                // Phase 3: Deduplicate — AI findings get priority
+                report.Findings = DeduplicateFindings(report.Findings);
+                report.ComputeGrades();
             }
 
-            // Phase 3: Deduplicate — AI findings that overlap with rule findings
-            report.Findings = DeduplicateFindings(report.Findings);
-
-            report.ComputeGrades();
             return report;
         }
 

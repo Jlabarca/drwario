@@ -83,10 +83,9 @@ namespace DrWario.Runtime
 
             // Memory
             long totalHeap = Profiler.GetTotalAllocatedMemoryLong();
-            long currentGcAlloc = Profiler.GetTotalAllocatedMemoryLong();
-            long gcDelta = currentGcAlloc - _prevTotalGcAlloc;
+            long gcDelta = totalHeap - _prevTotalGcAlloc;
             if (gcDelta < 0) gcDelta = 0; // Handle GC collection resets
-            _prevTotalGcAlloc = currentGcAlloc;
+            _prevTotalGcAlloc = totalHeap;
 
             var sample = new FrameSample
             {
