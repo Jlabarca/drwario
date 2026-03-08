@@ -38,6 +38,16 @@ namespace DrWario.Editor.Analysis.Rules
 
             if (dropCount == 0) return findings;
 
+            // Editor adjustment
+            bool isEditor = session.Metadata.IsEditor;
+            var baseline = session.Metadata.Baseline;
+            float adjustedP95 = p95;
+            if (isEditor && baseline.IsValid)
+                adjustedP95 = EditorAdjustment.SubtractBaseline(p95, baseline.AvgCpuFrameTimeMs);
+
+            var confidence = EditorAdjustment.ClassifyConfidence(p95, adjustedP95, targetMs, isEditor);
+            string envNote = EditorAdjustment.BuildEnvironmentNote(session.Metadata, "Frame times");
+
             float dropRatio = (float)dropCount / frames.Length;
             var severity = severeCount > 5 ? Severity.Critical
                          : dropRatio > 0.1f ? Severity.Warning
@@ -74,7 +84,9 @@ namespace DrWario.Editor.Analysis.Rules
                                  "rendering bottlenecks, or heavy script execution in Update/LateUpdate.",
                 Metric = p95,
                 Threshold = targetMs,
-                FrameIndex = -1
+                FrameIndex = -1,
+                Confidence = confidence,
+                EnvironmentNote = envNote
             });
 
             return findings;

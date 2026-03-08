@@ -61,5 +61,34 @@ namespace DrWario.Runtime
         public int TargetFrameRate;
         public int ScreenWidth;
         public int ScreenHeight;
+
+        // Environment context — identifies editor vs build sessions
+        public bool IsEditor;
+        public bool IsDevelopmentBuild;
+        public EditorBaseline Baseline;
+
+        // Editor window state (only meaningful when IsEditor=true)
+        public bool SceneViewOpen;
+        public bool InspectorOpen;
+        public bool ProfilerOpen;
+        public int GameViewCount;
+    }
+
+    /// <summary>
+    /// Captures idle editor overhead measured before Play Mode.
+    /// Used to estimate how much of the profiling data is editor noise vs actual game performance.
+    /// Only populated in editor sessions.
+    /// </summary>
+    public struct EditorBaseline
+    {
+        public float AvgCpuFrameTimeMs;
+        public float AvgRenderThreadMs;
+        public long AvgGcAllocBytes;
+        public int AvgGcAllocCount;
+        public int AvgDrawCalls;
+        public int AvgBatches;
+        public int AvgSetPassCalls;
+        public int SampleCount;
+        public bool IsValid;
     }
 }

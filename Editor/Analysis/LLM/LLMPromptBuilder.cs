@@ -35,6 +35,16 @@ Focus on:
 3. Unity-specific patterns (undisposed handles, shader compilation stalls, texture streaming issues)
 4. Prioritized, actionable recommendations
 
+IMPORTANT: When session data is from the Unity Editor (environment.isEditor=true), editor overhead
+inflates all metrics. The editorBaseline provides idle editor overhead measured before Play Mode.
+Use these to estimate actual game performance:
+- CPU time: subtract ~baseline.avgCpuFrameTimeMs from measured values
+- GC allocations: subtract ~baseline.avgGcAllocBytes per frame
+- Draw calls: subtract ~baseline.avgDrawCalls (especially if Scene view is open)
+- Memory totals: editor uses significant memory for metadata/caches — don't alarm on absolute values
+When findings have confidence=""Low"", flag them as ""may be editor overhead"" rather than definitive issues.
+Recommend the user verify critical findings in a development build.
+
 Return ONLY a JSON array of findings. No markdown, no preamble, no explanation outside the JSON.";
 
         private const string AskDoctorSystemPrompt = @"You are DrWario, an expert Unity runtime performance consultant.
@@ -106,11 +116,14 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                 sb.AppendLine("Findings (sorted by severity):");
                 foreach (var f in report.Findings.OrderByDescending(f => f.Severity))
                 {
-                    sb.AppendLine($"  [{f.Severity}] {f.Title}");
+                    string confTag = f.Confidence != Confidence.High ? $" [Confidence: {f.Confidence}]" : "";
+                    sb.AppendLine($"  [{f.Severity}]{confTag} {f.Title}");
                     sb.AppendLine($"    {f.Description}");
                     sb.AppendLine($"    Recommendation: {f.Recommendation}");
                     if (f.Metric != 0 || f.Threshold != 0)
                         sb.AppendLine($"    Metric: {f.Metric:F1} (threshold: {f.Threshold:F1})");
+                    if (!string.IsNullOrEmpty(f.EnvironmentNote))
+                        sb.AppendLine($"    Note: {f.EnvironmentNote}");
                     sb.AppendLine();
                 }
             }
@@ -141,6 +154,9 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"    \"screenHeight\": {session.Metadata.ScreenHeight}");
             sb.AppendLine("  },");
 
+            // Environment context (editor vs build)
+            AppendEnvironment(sb, session);
+
             // Frame summary
             AppendFrameSummary(sb, session);
 
@@ -158,6 +174,44 @@ If data is insufficient for a definitive answer, say so and suggest what additio
 
             sb.AppendLine("}");
             return sb.ToString();
+        }
+
+        private static void AppendEnvironment(StringBuilder sb, ProfilingSession session)
+        {
+            var m = session.Metadata;
+            sb.AppendLine("  \"environment\": {");
+            sb.AppendLine($"    \"isEditor\": {m.IsEditor.ToString().ToLower()},");
+            sb.AppendLine($"    \"isDevelopmentBuild\": {m.IsDevelopmentBuild.ToString().ToLower()},");
+
+            if (m.IsEditor)
+            {
+                sb.AppendLine("    \"editorWindows\": {");
+                sb.AppendLine($"      \"sceneViewOpen\": {m.SceneViewOpen.ToString().ToLower()},");
+                sb.AppendLine($"      \"inspectorOpen\": {m.InspectorOpen.ToString().ToLower()},");
+                sb.AppendLine($"      \"profilerOpen\": {m.ProfilerOpen.ToString().ToLower()},");
+                sb.AppendLine($"      \"gameViewCount\": {m.GameViewCount}");
+                sb.AppendLine("    },");
+
+                if (m.Baseline.IsValid)
+                {
+                    sb.AppendLine("    \"editorBaseline\": {");
+                    sb.AppendLine($"      \"avgCpuFrameTimeMs\": {m.Baseline.AvgCpuFrameTimeMs:F1},");
+                    sb.AppendLine($"      \"avgRenderThreadMs\": {m.Baseline.AvgRenderThreadMs:F1},");
+                    sb.AppendLine($"      \"avgGcAllocBytes\": {m.Baseline.AvgGcAllocBytes},");
+                    sb.AppendLine($"      \"avgGcAllocCount\": {m.Baseline.AvgGcAllocCount},");
+                    sb.AppendLine($"      \"avgDrawCalls\": {m.Baseline.AvgDrawCalls},");
+                    sb.AppendLine($"      \"avgBatches\": {m.Baseline.AvgBatches},");
+                    sb.AppendLine($"      \"avgSetPassCalls\": {m.Baseline.AvgSetPassCalls},");
+                    sb.AppendLine($"      \"sampleCount\": {m.Baseline.SampleCount},");
+                    sb.AppendLine($"      \"isValid\": true");
+                    sb.AppendLine("    },");
+                }
+
+                sb.AppendLine("    \"note\": \"Data captured in Unity Editor Play Mode. Editor overhead (Scene view, Inspector, etc.) " +
+                              "is included in measurements. Subtract baseline values for approximate game-only metrics.\"");
+            }
+
+            sb.AppendLine("  },");
         }
 
         private static void AppendFrameSummary(StringBuilder sb, ProfilingSession session)
@@ -414,7 +468,7 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             {
                 var f = findings[i];
                 string comma = i < findings.Count - 1 ? "," : "";
-                sb.AppendLine($"      {{ \"ruleId\": \"{f.RuleId}\", \"category\": \"{f.Category}\", \"severity\": \"{f.Severity}\", \"title\": \"{EscapeJson(f.Title)}\", \"metric\": {f.Metric:F1}, \"threshold\": {f.Threshold:F1} }}{comma}");
+                sb.AppendLine($"      {{ \"ruleId\": \"{f.RuleId}\", \"category\": \"{f.Category}\", \"severity\": \"{f.Severity}\", \"confidence\": \"{f.Confidence}\", \"title\": \"{EscapeJson(f.Title)}\", \"metric\": {f.Metric:F1}, \"threshold\": {f.Threshold:F1} }}{comma}");
             }
             sb.AppendLine("    ]");
             sb.AppendLine("  }");

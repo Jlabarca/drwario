@@ -24,7 +24,14 @@ namespace DrWario.Editor.Analysis.Rules
                 ? 1000f / session.Metadata.TargetFrameRate
                 : 16.67f;
 
-            float avgCpu = frames.Average(f => f.CpuFrameTimeMs);
+            float rawAvgCpu = frames.Average(f => f.CpuFrameTimeMs);
+
+            // Editor adjustment: subtract baseline CPU overhead
+            bool isEditor = session.Metadata.IsEditor;
+            var baseline = session.Metadata.Baseline;
+            float avgCpu = rawAvgCpu;
+            if (isEditor && baseline.IsValid)
+                avgCpu = EditorAdjustment.SubtractBaseline(rawAvgCpu, baseline.AvgCpuFrameTimeMs);
             var gpuFrames = frames.Where(f => f.GpuFrameTimeMs > 0).ToArray();
             var renderFrames = frames.Where(f => f.RenderThreadMs > 0).ToArray();
 
@@ -108,6 +115,19 @@ namespace DrWario.Editor.Analysis.Rules
                 return findings;
             }
 
+            // In editor, CPU-bound classification may be inflated by editor overhead
+            var confidence = Confidence.High;
+            string envNote = null;
+            if (isEditor)
+            {
+                float adjustedMetric = System.Math.Max(avgCpu, avgGpu);
+                confidence = EditorAdjustment.ClassifyConfidence(
+                    System.Math.Max(rawAvgCpu, avgGpu), adjustedMetric, targetMs, true);
+                envNote = EditorAdjustment.BuildEnvironmentNote(session.Metadata, "CPU/GPU timing");
+                if (bottleneck == "CPU-Bound" && baseline.IsValid)
+                    description += $" (Note: editor baseline ~{baseline.AvgCpuFrameTimeMs:F1}ms subtracted from CPU avg)";
+            }
+
             findings.Add(new DiagnosticFinding
             {
                 RuleId = RuleId,
@@ -118,7 +138,9 @@ namespace DrWario.Editor.Analysis.Rules
                 Recommendation = recommendation,
                 Metric = System.Math.Max(avgCpu, avgGpu),
                 Threshold = targetMs,
-                FrameIndex = -1
+                FrameIndex = -1,
+                Confidence = confidence,
+                EnvironmentNote = envNote
             });
 
             return findings;

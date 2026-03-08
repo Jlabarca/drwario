@@ -46,8 +46,20 @@ namespace DrWario.Editor.Analysis.Rules
             long avgTris = framesWithTris.Length > 0 ? (long)framesWithTris.Average(f => f.Triangles) : 0;
             int maxTris = framesWithTris.Length > 0 ? framesWithTris.Max(f => f.Triangles) : 0;
 
-            // Draw call analysis
-            if (avgDrawCalls > HighDrawCalls)
+            // Editor adjustment: subtract baseline draw calls (Scene view, Gizmos, etc.)
+            bool isEditor = session.Metadata.IsEditor;
+            var baseline = session.Metadata.Baseline;
+            int adjustedDrawCalls = avgDrawCalls;
+            int adjustedSetPass = avgSetPass;
+            if (isEditor && baseline.IsValid)
+            {
+                adjustedDrawCalls = EditorAdjustment.SubtractBaseline(avgDrawCalls, baseline.AvgDrawCalls);
+                adjustedSetPass = EditorAdjustment.SubtractBaseline(avgSetPass, baseline.AvgSetPassCalls);
+            }
+            string envNote = EditorAdjustment.BuildEnvironmentNote(session.Metadata, "Rendering stats");
+
+            // Draw call analysis (use adjusted value for threshold check)
+            if (adjustedDrawCalls > HighDrawCalls)
             {
                 float batchingRatio = avgBatches > 0 && avgDrawCalls > 0
                     ? 1f - (float)avgBatches / avgDrawCalls
@@ -61,13 +73,18 @@ namespace DrWario.Editor.Analysis.Rules
                     ? $" Batching efficiency: {batchingRatio * 100:F0}% ({avgBatches} batches from {avgDrawCalls} draw calls)."
                     : "";
 
+                var drawConfidence = EditorAdjustment.ClassifyConfidence(avgDrawCalls, adjustedDrawCalls, HighDrawCalls, isEditor);
+                string editorNote = isEditor && baseline.IsValid
+                    ? $" (editor baseline: ~{baseline.AvgDrawCalls} draw calls subtracted)"
+                    : "";
+
                 findings.Add(new DiagnosticFinding
                 {
                     RuleId = "DRAW_CALLS",
                     Category = Category,
                     Severity = severity,
                     Title = $"High Draw Calls (avg {avgDrawCalls}, max {maxDrawCalls})",
-                    Description = $"Averaging {avgDrawCalls} draw calls per frame (peak {maxDrawCalls}).{batchingNote}",
+                    Description = $"Averaging {avgDrawCalls} draw calls per frame (peak {maxDrawCalls}).{batchingNote}{editorNote}",
                     Recommendation = batchingRatio < PoorBatchingRatio
                         ? "Batching is poor. Enable GPU Instancing on materials, use SRP Batcher (URP/HDRP), " +
                           "merge static geometry with StaticBatchingUtility, and reduce unique material count."
@@ -75,14 +92,17 @@ namespace DrWario.Editor.Analysis.Rules
                           "and LOD groups for distant objects.",
                     Metric = avgDrawCalls,
                     Threshold = HighDrawCalls,
-                    FrameIndex = -1
+                    FrameIndex = -1,
+                    Confidence = drawConfidence,
+                    EnvironmentNote = envNote
                 });
             }
 
-            // Set-pass call analysis
-            if (avgSetPass > HighSetPassCalls)
+            // Set-pass call analysis (use adjusted value for threshold check)
+            if (adjustedSetPass > HighSetPassCalls)
             {
-                var severity = avgSetPass > CriticalSetPassCalls ? Severity.Critical : Severity.Warning;
+                var severity = adjustedSetPass > CriticalSetPassCalls ? Severity.Critical : Severity.Warning;
+                var setPassConfidence = EditorAdjustment.ClassifyConfidence(avgSetPass, adjustedSetPass, HighSetPassCalls, isEditor);
 
                 findings.Add(new DiagnosticFinding
                 {
@@ -97,11 +117,13 @@ namespace DrWario.Editor.Analysis.Rules
                                      "Sort rendering by material to minimize state changes.",
                     Metric = avgSetPass,
                     Threshold = HighSetPassCalls,
-                    FrameIndex = -1
+                    FrameIndex = -1,
+                    Confidence = setPassConfidence,
+                    EnvironmentNote = envNote
                 });
             }
 
-            // Triangle count analysis
+            // Triangle count analysis (no editor adjustment — triangles aren't significantly affected by editor)
             if (avgTris > HighTriangles)
             {
                 var severity = avgTris > CriticalTriangles ? Severity.Critical : Severity.Warning;
@@ -119,7 +141,8 @@ namespace DrWario.Editor.Analysis.Rules
                                      "On mobile, target <500K triangles per frame.",
                     Metric = avgTris,
                     Threshold = HighTriangles,
-                    FrameIndex = -1
+                    FrameIndex = -1,
+                    Confidence = isEditor ? Confidence.Medium : Confidence.High
                 });
             }
 

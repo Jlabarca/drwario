@@ -46,6 +46,10 @@ namespace DrWario.Editor.Analysis.Rules
 
             var severity = slope > GrowthCriticalBytesPerSec ? Severity.Critical : Severity.Warning;
 
+            // Editor memory includes Undo history, Inspector caches, import metadata.
+            // Slope is still meaningful but may be inflated — tag with Medium confidence.
+            bool isEditor = session.Metadata.IsEditor;
+
             findings.Add(new DiagnosticFinding
             {
                 RuleId = RuleId,
@@ -58,7 +62,12 @@ namespace DrWario.Editor.Analysis.Rules
                                  "growing collections, retained event handlers, or texture/mesh leaks.",
                 Metric = (float)slope,
                 Threshold = (float)GrowthWarningBytesPerSec,
-                FrameIndex = -1
+                FrameIndex = -1,
+                Confidence = isEditor ? Confidence.Medium : Confidence.High,
+                EnvironmentNote = isEditor
+                    ? "Editor memory includes Undo history, Inspector caches, and import metadata. " +
+                      "Verify memory growth in a standalone build for accurate leak detection."
+                    : null
             });
 
             return findings;

@@ -18,16 +18,23 @@ namespace DrWario.Editor.Analysis
 
         public void ComputeGrades()
         {
-            // Overall: start at 100, subtract per finding
+            // Overall: start at 100, subtract per finding.
+            // Low-confidence findings (likely editor overhead) get reduced penalty.
             float score = 100f;
             foreach (var f in Findings)
             {
-                score -= f.Severity switch
+                float penalty = f.Severity switch
                 {
                     Severity.Critical => 15f,
                     Severity.Warning => 5f,
                     _ => 1f
                 };
+                // Reduce penalty for low-confidence editor findings
+                if (f.Confidence == Confidence.Low)
+                    penalty *= 0.25f;
+                else if (f.Confidence == Confidence.Medium)
+                    penalty *= 0.6f;
+                score -= penalty;
             }
             HealthScore = Mathf.Clamp(score, 0f, 100f);
             OverallGrade = ScoreToGrade(HealthScore);
@@ -39,12 +46,17 @@ namespace DrWario.Editor.Analysis
                 float catScore = 100f;
                 foreach (var f in Findings.Where(f => f.Category == cat))
                 {
-                    catScore -= f.Severity switch
+                    float catPenalty = f.Severity switch
                     {
                         Severity.Critical => 15f,
                         Severity.Warning => 5f,
                         _ => 1f
                     };
+                    if (f.Confidence == Confidence.Low)
+                        catPenalty *= 0.25f;
+                    else if (f.Confidence == Confidence.Medium)
+                        catPenalty *= 0.6f;
+                    catScore -= catPenalty;
                 }
                 CategoryGrades[cat] = ScoreToGrade(Mathf.Clamp(catScore, 0f, 100f));
             }
@@ -69,6 +81,9 @@ namespace DrWario.Editor.Analysis
             sb.AppendLine($"Platform:  {Session.Platform}");
             sb.AppendLine($"Unity:     {Session.UnityVersion}");
             sb.AppendLine($"Duration:  {(Session.EndTime - Session.StartTime).TotalSeconds:F1}s");
+            sb.AppendLine($"Environment: {(Session.IsEditor ? "Editor" : "Build")}");
+            if (Session.IsEditor && Session.Baseline.IsValid)
+                sb.AppendLine($"Baseline:  CPU {Session.Baseline.AvgCpuFrameTimeMs:F1}ms | GC {Session.Baseline.AvgGcAllocBytes}B/frame | Draw calls {Session.Baseline.AvgDrawCalls}");
             sb.AppendLine();
             sb.AppendLine($"  Overall Grade: {OverallGrade}  ({HealthScore:F0}/100)");
             sb.AppendLine();
@@ -89,9 +104,12 @@ namespace DrWario.Editor.Analysis
                     Severity.Warning => "[! ]",
                     _ => "[i ]"
                 };
-                sb.AppendLine($"{icon} {f.Title}");
+                string confLabel = f.Confidence != Confidence.High ? $" [{f.Confidence} confidence]" : "";
+                sb.AppendLine($"{icon}{confLabel} {f.Title}");
                 sb.AppendLine($"     {f.Description}");
                 sb.AppendLine($"     -> {f.Recommendation}");
+                if (!string.IsNullOrEmpty(f.EnvironmentNote))
+                    sb.AppendLine($"     Note: {f.EnvironmentNote}");
                 sb.AppendLine();
             }
 
@@ -109,6 +127,7 @@ namespace DrWario.Editor.Analysis
             public string generatedAt;
             public string platform;
             public string unityVersion;
+            public bool isEditor;
             public char overallGrade;
             public float healthScore;
             public List<SerializableCategoryGrade> categoryGrades = new();
@@ -119,6 +138,7 @@ namespace DrWario.Editor.Analysis
                 generatedAt = r.GeneratedAt.ToString("o");
                 platform = r.Session.Platform;
                 unityVersion = r.Session.UnityVersion;
+                isEditor = r.Session.IsEditor;
                 overallGrade = r.OverallGrade;
                 healthScore = r.HealthScore;
                 foreach (var kv in r.CategoryGrades)
@@ -130,11 +150,13 @@ namespace DrWario.Editor.Analysis
                         ruleId = f.RuleId,
                         category = f.Category,
                         severity = f.Severity.ToString(),
+                        confidence = f.Confidence.ToString(),
                         title = f.Title,
                         description = f.Description,
                         recommendation = f.Recommendation,
                         metric = f.Metric,
-                        threshold = f.Threshold
+                        threshold = f.Threshold,
+                        environmentNote = f.EnvironmentNote ?? ""
                     });
                 }
             }
@@ -153,11 +175,13 @@ namespace DrWario.Editor.Analysis
             public string ruleId;
             public string category;
             public string severity;
+            public string confidence;
             public string title;
             public string description;
             public string recommendation;
             public float metric;
             public float threshold;
+            public string environmentNote;
         }
     }
 }

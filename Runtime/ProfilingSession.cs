@@ -41,10 +41,25 @@ namespace DrWario.Runtime
                 Platform = UnityEngine.Application.platform.ToString(),
                 TargetFrameRate = UnityEngine.Application.targetFrameRate,
                 ScreenWidth = UnityEngine.Screen.width,
-                ScreenHeight = UnityEngine.Screen.height
+                ScreenHeight = UnityEngine.Screen.height,
+                IsEditor = UnityEngine.Application.isEditor,
+                IsDevelopmentBuild = UnityEngine.Debug.isDebugBuild
             };
 
             IsRecording = true;
+        }
+
+        /// <summary>
+        /// Attach editor baseline and window state after Start().
+        /// Called from editor code that has access to EditorWindow APIs.
+        /// </summary>
+        public void SetEditorContext(EditorBaseline baseline, bool sceneViewOpen, bool inspectorOpen, bool profilerOpen, int gameViewCount)
+        {
+            Metadata.Baseline = baseline;
+            Metadata.SceneViewOpen = sceneViewOpen;
+            Metadata.InspectorOpen = inspectorOpen;
+            Metadata.ProfilerOpen = profilerOpen;
+            Metadata.GameViewCount = gameViewCount;
         }
 
         public void Stop()
