@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using DrWario.Runtime;
 
 namespace DrWario.Editor.Analysis.Rules
@@ -41,6 +42,16 @@ namespace DrWario.Editor.Analysis.Rules
                          : spikeCount > 10 ? Severity.Warning
                          : Severity.Info;
 
+            // Include GC alloc count if available (from ProfilerRecorder)
+            string allocCountNote = "";
+            bool hasAllocCount = frames.Any(f => f.GcAllocCount > 0);
+            if (hasAllocCount)
+            {
+                float avgCount = frames.Average(f => f.GcAllocCount);
+                int maxCount = frames.Max(f => f.GcAllocCount);
+                allocCountNote = $" Avg {avgCount:F0} allocations/frame (peak {maxCount}).";
+            }
+
             findings.Add(new DiagnosticFinding
             {
                 RuleId = RuleId,
@@ -49,9 +60,10 @@ namespace DrWario.Editor.Analysis.Rules
                 Title = $"GC Allocation Spikes ({spikeCount} frames)",
                 Description = $"{spikeCount}/{frames.Length} frames exceeded {SpikeThresholdBytes}B threshold. " +
                               $"Worst: {worstAlloc / 1024f:F1}KB at frame {worstFrame}. " +
-                              $"Spike ratio: {ratio:P1}.",
+                              $"Spike ratio: {ratio:P1}.{allocCountNote}",
                 Recommendation = "Reduce per-frame allocations. Check for string concatenation in Update(), " +
-                                 "LINQ in hot paths, boxing of value types, and new[] in loops.",
+                                 "LINQ in hot paths, boxing of value types, and new[] in loops. " +
+                                 "Use the Unity Profiler's GC.Alloc column to find exact allocation sources.",
                 Metric = spikeCount,
                 Threshold = SpikeThresholdBytes,
                 FrameIndex = worstFrame

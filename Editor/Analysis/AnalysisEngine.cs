@@ -24,6 +24,8 @@ namespace DrWario.Editor.Analysis
             _rules.Add(new MemoryLeakRule());
             _rules.Add(new AssetLoadRule());
             _rules.Add(new NetworkLatencyRule());
+            _rules.Add(new RenderingEfficiencyRule());
+            _rules.Add(new CPUvsGPUBottleneckRule());
 
             if (llmConfig != null && llmConfig.IsConfigured)
             {
