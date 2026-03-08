@@ -2,7 +2,7 @@
     "name": "DrWario.Editor",
     "rootNamespace": "DrWario.Editor",
     "references": [
-        "DrWario.Runtime"
+        "GUID:4b2d7eb1f83eb17560c643870b4b3702"
     ],
     "includePlatforms": [
         "Editor"
