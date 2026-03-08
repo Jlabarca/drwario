@@ -47,7 +47,7 @@ namespace DrWario.Editor.Analysis.Rules
             bool hasAllocCount = frames.Any(f => f.GcAllocCount > 0);
             if (hasAllocCount)
             {
-                float avgCount = frames.Average(f => f.GcAllocCount);
+                float avgCount = (float)frames.Average(f => f.GcAllocCount);
                 int maxCount = frames.Max(f => f.GcAllocCount);
                 allocCountNote = $" Avg {avgCount:F0} allocations/frame (peak {maxCount}).";
             }

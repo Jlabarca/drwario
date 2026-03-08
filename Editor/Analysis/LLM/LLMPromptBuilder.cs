@@ -230,7 +230,7 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                     sb.AppendLine($"      \"batches\": {{ \"avg\": {batches.Average():F0}, \"max\": {batches.Max()} }},");
                     if (drawCalls.Length > 0)
                     {
-                        float batchingEfficiency = 1f - (float)batches.Average() / drawCalls.Average();
+                        float batchingEfficiency = 1f - (float)(batches.Average() / drawCalls.Average());
                         sb.AppendLine($"      \"batchingEfficiency\": {batchingEfficiency * 100:F1},");
                     }
                 }
