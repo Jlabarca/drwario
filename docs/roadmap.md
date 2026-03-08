@@ -29,22 +29,21 @@
 - 0 of 91 designed tests implemented
 - GPU profiling returns 0 on many platforms
 - No UI for enabling/disabling individual rules
-- LLM calls block the editor for up to 30s
 - No streaming LLM responses
 - No report comparison
-- Several bugs identified (see technical-reference.md)
+- No Unity Profiler integration (uses basic sampling only)
 
 ---
 
 ## Near-Term Priorities
 
-### 1. Bug Fixes
+### 1. Bug Fixes (DONE)
 
-- [ ] Fix `GcAllocBytes` double-call in `RuntimeCollector.cs:85-88`
-- [ ] Make `LLMClient._lastRequestTime` static (rate limiter fix)
-- [ ] Cache `GetFrames()` result in `LLMPromptBuilder` (4x allocation waste)
-- [ ] Fix `CategoryGrades` missing from JSON export
-- [ ] Validate `TestConnectionAsync` response content
+- [x] Fix `GcAllocBytes` double-call in `RuntimeCollector`
+- [x] Make `LLMClient._lastRequestTime` static (rate limiter fix)
+- [x] Fix `CategoryGrades` missing from JSON export
+- [x] Validate `TestConnectionAsync` response content
+- [x] Make analysis pipeline async (editor no longer freezes)
 
 ### 2. Automated Tests
 
@@ -56,35 +55,48 @@
 4. **LLMResponseParser** — code fences, bare arrays, malformed JSON, null fields
 5. **Deduplication** — AI priority, title normalization, category matching
 
-### 3. Async Analysis
+### 3. Async Analysis (DONE)
 
-- [ ] Make `IAnalysisRule` support async: `Task<List<DiagnosticFinding>> AnalyzeAsync(...)`
-- [ ] Remove `Task.Wait()` from `AIAnalysisRule`
-- [ ] Add progress bar and cancel button during LLM analysis
-- [ ] Keep editor responsive during analysis
+- [x] `AnalysisEngine.AnalyzeAsync()` — deterministic rules run instantly, AI runs without blocking
+- [x] `AIAnalysisRule.AnalyzeAsync()` — no more `Task.Wait()`
+- [x] Editor stays responsive during LLM analysis
+- [ ] Add cancel button during LLM analysis
 
-### 4. GPU Profiling Fallback
+### 4. Unity Profiler Integration (IN PROGRESS)
+
+See [design-profiler-integration.md](design-profiler-integration.md) for full design.
+
+- [ ] `ProfilerBridge` — read `ProfilerRecorder` counters (draw calls, batches, GC.Alloc, etc.)
+- [ ] Enhanced `FrameSample` with rendering metrics
+- [ ] `RenderingEfficiencyRule` — draw call / batching / set-pass analysis
+- [ ] `CPUvsGPUBottleneckRule` — bottleneck classification
+- [ ] "Open in Profiler" button on finding cards
+- [ ] Profiler markers for DrWario's own overhead
+- [ ] Fallback to legacy sampling if `ProfilerRecorder` unavailable
+
+### 5. GPU Profiling Fallback
 
 - [ ] Detect when `FrameTimingManager` returns 0
+- [ ] Use `ProfilerRecorder` GPU counter as primary source
 - [ ] Platform-specific fallback estimation
 - [ ] Sentinel value to distinguish "unsupported" from "zero GPU work"
 - [ ] New GPU-specific analysis rule
 
-### 5. Rule Management UI
+### 6. Rule Management UI
 
 - [ ] Toggle individual rules on/off in LLM Settings tab
 - [ ] Show rule descriptions and thresholds
 - [ ] Custom threshold overrides per rule
 - [ ] Persist rule preferences in EditorPrefs
 
-### 6. Sparkline Improvements
+### 7. Sparkline Improvements
 
 - [ ] Mouse hover tooltips with exact frame time values
 - [ ] Click to jump to frame in Unity Profiler
 - [ ] Show GC spikes as markers on the sparkline
 - [ ] Zoom and pan support
 
-### 7. Report Comparison
+### 8. Report Comparison
 
 - [ ] Side-by-side diff of two historical reports
 - [ ] Grade trend visualization over time
@@ -189,17 +201,17 @@ Learn from the community:
 
 ## Technical Debt Backlog
 
-| Issue | Priority | Effort |
+| Issue | Priority | Status |
 |-------|----------|--------|
-| `Task.Wait()` blocking | High | Medium — async propagation through interfaces |
-| GcAllocBytes bug | High | Low — single line fix |
-| Rate limiter per-instance | Medium | Low — make field static |
-| GetFrames() 4x allocation | Medium | Low — cache in local variable |
-| CategoryGrades JSON export | Medium | Low — use serializable list |
-| AdditionalContext global static | Medium | Medium — registration pattern |
-| BootStageRule multi-RuleId | Low | Medium — split into 3 rules |
-| TestConnection validation | Low | Low — check response body |
-| Hand-rolled JSON parser | Low | High — would need dependency or more robust parser |
+| ~~`Task.Wait()` blocking~~ | ~~High~~ | **FIXED** — `AnalyzeAsync()` |
+| ~~GcAllocBytes double-call~~ | ~~High~~ | **FIXED** |
+| ~~Rate limiter per-instance~~ | ~~Medium~~ | **FIXED** — static field |
+| ~~CategoryGrades JSON export~~ | ~~Medium~~ | **FIXED** — serializable list |
+| ~~TestConnection validation~~ | ~~Low~~ | **FIXED** — content check |
+| Basic profiling (no ProfilerRecorder) | High | In progress — see design doc |
+| AdditionalContext global static | Medium | Open — needs registration pattern |
+| BootStageRule multi-RuleId | Low | Open — split into 3 rules |
+| Hand-rolled JSON parser | Low | Open — fragile but works |
 
 ---
 

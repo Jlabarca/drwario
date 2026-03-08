@@ -186,13 +186,15 @@ DestroyCollector() → Destroy(gameObject)
 
 All 6 rules run sequentially. Each receives the full `ProfilingSession` and returns `List<DiagnosticFinding>`.
 
-### Phase 2: AI Analysis (Optional)
+### Phase 2: AI Analysis (Optional, Async)
 
 `AIAnalysisRule` receives Phase 1 findings as context, then:
 1. `LLMPromptBuilder.BuildSystemPrompt()` — expert Unity analyst instructions + `AdditionalContext`
 2. `LLMPromptBuilder.BuildUserPrompt()` — structured JSON with session stats, memory trajectory (12 downsampled points + linear regression), boot pipeline, asset loads, pre-analysis findings
-3. `LLMClient.SendAsync()` — HTTP POST to provider (blocks via `Task.Wait()`)
+3. `LLMClient.SendAsync()` — async HTTP POST to provider (non-blocking)
 4. `LLMResponseParser.Parse()` — JSON array → `DiagnosticFinding` list
+
+Use `AnalysisEngine.AnalyzeAsync()` for the full async pipeline. `Analyze()` runs deterministic rules only.
 
 ### Phase 3: Deduplication + Grading
 
@@ -360,22 +362,18 @@ All prefixed with `DrWario_`:
 
 ## Known Issues
 
-### Bugs
+### Fixed (v1.1)
 
-1. **GcAllocBytes double-call** — `RuntimeCollector.cs:85-88` calls `Profiler.GetTotalAllocatedMemoryLong()` twice identically. Second call is wasted. `GcAllocBytes` measures heap growth delta, not GC allocation events. Field name is misleading.
+1. ~~**GcAllocBytes double-call**~~ — Fixed. Was calling `Profiler.GetTotalAllocatedMemoryLong()` twice; now uses single call.
+2. ~~**Rate limiter per-instance**~~ — Fixed. `LLMClient._lastRequestTime` is now `static`.
+3. ~~**CategoryGrades JSON export**~~ — Fixed. Uses serializable list wrapper.
+4. ~~**TestConnectionAsync false positive**~~ — Fixed. Validates response content is non-empty.
+5. ~~**`Task.Wait()` blocks editor**~~ — Fixed. `AnalysisEngine.AnalyzeAsync()` runs AI analysis without blocking.
 
-2. **Rate limiter is per-instance** — `LLMClient._lastRequestTime` is an instance field. New `LLMClient` per analysis call = rate limiter never triggers between runs. Should be `static`.
+### Remaining Limitations
 
-3. **GetFrames() called 4x in BuildUserPrompt** — `LLMPromptBuilder.cs` calls `session.GetFrames()` four separate times during prompt construction (~504KB ephemeral allocation). Should cache.
-
-4. **CategoryGrades missing from JSON export** — `Dictionary<string, char>` not serializable by `JsonUtility`. Grades computed but lost on export.
-
-5. **TestConnectionAsync false positive** — Returns `true` on any non-error HTTP, even if body contains a model error (e.g., Ollama model-not-found with HTTP 200).
-
-### Architectural Limitations
-
-1. **`Task.Wait()` blocks editor** — `AIAnalysisRule.Analyze()` blocks main thread up to 30s. No cancel, no progress bar. Fix: make `IAnalysisRule` async.
-2. **GPU timing returns 0** on WebGL, some mobile, integrated graphics. No fallback or sentinel.
-3. **Hand-rolled JSON extraction** — `LLMClient.ExtractContent()` manually parses provider responses instead of using a JSON library. Fragile against format changes.
-4. **AdditionalContext is global mutable static** — Last `[InitializeOnLoad]` class wins. No multi-framework support.
-5. **BootStageRule emits 3 RuleIds** — `SLOW_BOOT`, `BOOT_FAILURE`, `TOTAL_BOOT_TIME` from one class. Breaks assumption that `RuleId` property identifies all findings.
+1. **GPU timing returns 0** on WebGL, some mobile, integrated graphics. No fallback or sentinel.
+2. **Hand-rolled JSON extraction** — `LLMClient.ExtractContent()` manually parses provider responses instead of using a JSON library. Fragile against format changes.
+3. **AdditionalContext is global mutable static** — Last `[InitializeOnLoad]` class wins. No multi-framework support.
+4. **BootStageRule emits 3 RuleIds** — `SLOW_BOOT`, `BOOT_FAILURE`, `TOTAL_BOOT_TIME` from one class. Breaks assumption that `RuleId` property identifies all findings.
+5. **Basic profiling data** — Uses raw `Profiler.GetTotalAllocatedMemoryLong()` instead of `ProfilerRecorder` counters. No draw call, batch, or rendering metrics. See [design-profiler-integration.md](design-profiler-integration.md) for the plan to fix this.

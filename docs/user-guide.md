@@ -128,6 +128,8 @@ All diagnostic findings sorted by severity:
 
 Each finding card shows severity badge, title, description, and category tag.
 
+Use **Copy Report to Clipboard** to copy the full text report for sharing or pasting into an LLM.
+
 ### Recommendations
 
 Findings grouped by category with actionable fix suggestions. Each recommendation includes:
@@ -135,6 +137,8 @@ Findings grouped by category with actionable fix suggestions. Each recommendatio
 - Severity icon
 - Issue title
 - Specific action to take (e.g., "Reduce per-frame allocations. Check for string concatenation in Update()...")
+
+Use **Copy Recommendations to Clipboard** to copy all recommendations for sharing.
 
 ### History
 
@@ -151,7 +155,12 @@ Use **Clear All** to delete all saved reports.
 
 ### Ask Doctor
 
-Free-form Q&A powered by the configured LLM. Requires LLM to be configured (see below).
+Free-form Q&A with AI analysis. Works with or without an LLM configured:
+
+- **With LLM configured:** Sends your question with profiling context to the AI and shows the response inline. Use **Copy Response** to copy the answer.
+- **Without LLM:** Clicking **Ask** (or **Copy Prompt**) copies the full prompt to your clipboard. Paste it into any LLM chat (Claude, ChatGPT, etc.) for analysis.
+
+Each example question has a **Copy** button to generate a complete standalone prompt for that question.
 
 Ask questions like:
 - "What is causing my frame drops?"
@@ -387,9 +396,9 @@ var report = engine.Analyze(session);
 
 `FrameTimingManager.GetLatestTimings()` returns 0 on some platforms (WebGL, some mobile devices, integrated graphics). CPU time falls back to `Time.unscaledDeltaTime * 1000f`. GPU-specific analysis will be limited.
 
-### LLM analysis freezes the editor
+### LLM analysis takes a while
 
-`AIAnalysisRule.Analyze()` blocks the main thread via `Task.Wait()` for up to 30 seconds (configurable timeout). This is a known limitation. The report will still contain all 6 deterministic rule findings regardless of LLM success.
+When LLM is configured, clicking **Analyze** runs the 6 deterministic rules instantly, then waits for the AI response (up to 30 seconds). The editor stays responsive during this time — the Analyze button is disabled and the status bar shows progress. The report updates when AI analysis completes.
 
 ### "Rate limited" error from LLM
 

@@ -199,6 +199,67 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"      \"max\": {gpuTimes.Max():F2}");
             sb.AppendLine("    },");
 
+            // Render thread timing
+            var renderTimes = frames.Select(f => f.RenderThreadMs).Where(t => t > 0).ToArray();
+            if (renderTimes.Length > 0)
+            {
+                var sortedRender = renderTimes.OrderBy(t => t).ToArray();
+                sb.AppendLine("    \"renderThreadTime\": {");
+                sb.AppendLine($"      \"avg\": {sortedRender.Average():F2},");
+                sb.AppendLine($"      \"p95\": {Percentile(sortedRender, 0.95f):F2},");
+                sb.AppendLine($"      \"max\": {sortedRender.Max():F2}");
+                sb.AppendLine("    },");
+            }
+
+            // Rendering metrics (from ProfilerRecorder — 0 if unavailable)
+            bool hasRenderData = frames.Any(f => f.DrawCalls > 0);
+            if (hasRenderData)
+            {
+                var drawCalls = frames.Select(f => f.DrawCalls).Where(d => d > 0).ToArray();
+                var batches = frames.Select(f => f.Batches).Where(b => b > 0).ToArray();
+                var setPasses = frames.Select(f => f.SetPassCalls).Where(s => s > 0).ToArray();
+                var tris = frames.Select(f => (long)f.Triangles).Where(t => t > 0).ToArray();
+
+                sb.AppendLine("    \"rendering\": {");
+                if (drawCalls.Length > 0)
+                {
+                    sb.AppendLine($"      \"drawCalls\": {{ \"avg\": {drawCalls.Average():F0}, \"max\": {drawCalls.Max()} }},");
+                }
+                if (batches.Length > 0)
+                {
+                    sb.AppendLine($"      \"batches\": {{ \"avg\": {batches.Average():F0}, \"max\": {batches.Max()} }},");
+                    if (drawCalls.Length > 0)
+                    {
+                        float batchingEfficiency = 1f - (float)batches.Average() / drawCalls.Average();
+                        sb.AppendLine($"      \"batchingEfficiency\": {batchingEfficiency * 100:F1},");
+                    }
+                }
+                if (setPasses.Length > 0)
+                {
+                    sb.AppendLine($"      \"setPassCalls\": {{ \"avg\": {setPasses.Average():F0}, \"max\": {setPasses.Max()} }},");
+                }
+                if (tris.Length > 0)
+                {
+                    sb.AppendLine($"      \"triangles\": {{ \"avg\": {tris.Average():F0}, \"max\": {tris.Max()} }}");
+                }
+                sb.AppendLine("    },");
+            }
+
+            // Bottleneck classification
+            float avgCpu = cpuTimes.Average();
+            float avgGpu = gpuTimes.Average();
+            string bottleneck = "unknown";
+            if (avgGpu > 0 && avgCpu > 0)
+            {
+                if (avgGpu > avgCpu * 1.3f) bottleneck = "GPU-bound";
+                else if (avgCpu > avgGpu * 1.3f) bottleneck = "CPU-bound";
+                else bottleneck = "balanced";
+            }
+            else if (avgGpu == 0)
+            {
+                bottleneck = "GPU data unavailable";
+            }
+
             sb.AppendLine("    \"gcAllocation\": {");
             sb.AppendLine($"      \"avgPerFrame\": {(long)gcAllocs.Average()},");
             sb.AppendLine($"      \"maxPerFrame\": {gcAllocs.Max()},");
@@ -207,12 +268,26 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"      \"spikeThreshold\": 1024");
             sb.AppendLine("    },");
 
+            // GC allocation count (from ProfilerRecorder)
+            bool hasGcCount = frames.Any(f => f.GcAllocCount > 0);
+            if (hasGcCount)
+            {
+                var gcCounts = frames.Select(f => f.GcAllocCount).ToArray();
+                sb.AppendLine("    \"gcAllocCount\": {");
+                sb.AppendLine($"      \"avgPerFrame\": {gcCounts.Average():F1},");
+                sb.AppendLine($"      \"maxPerFrame\": {gcCounts.Max()},");
+                sb.AppendLine($"      \"totalAllocations\": {gcCounts.Sum()}");
+                sb.AppendLine("    },");
+            }
+
             sb.AppendLine("    \"frameDrops\": {");
             sb.AppendLine($"      \"count\": {dropCount},");
             sb.AppendLine($"      \"severeCount\": {severeCount},");
             sb.AppendLine($"      \"dropRatio\": {(float)dropCount / frames.Length:F4},");
             sb.AppendLine($"      \"targetMs\": {targetMs:F2}");
-            sb.AppendLine("    }");
+            sb.AppendLine("    },");
+
+            sb.AppendLine($"    \"bottleneck\": \"{bottleneck}\"");
             sb.AppendLine("  },");
         }
 
@@ -262,6 +337,14 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine("    \"linearRegression\": {");
             sb.AppendLine($"      \"heapSlopeBytePerSec\": {slope:F0},");
             sb.AppendLine($"      \"heapSlopeMBPerMin\": {slopeMBMin:F2}");
+            sb.AppendLine("    },");
+
+            // Memory breakdown at end of session
+            var lastFrame = frames[frames.Length - 1];
+            sb.AppendLine("    \"currentBreakdown\": {");
+            sb.AppendLine($"      \"totalHeapMB\": {lastFrame.TotalHeapBytes / (1024.0 * 1024.0):F1},");
+            sb.AppendLine($"      \"textureMemoryMB\": {lastFrame.TextureMemoryBytes / (1024.0 * 1024.0):F1},");
+            sb.AppendLine($"      \"meshMemoryMB\": {lastFrame.MeshMemoryBytes / (1024.0 * 1024.0):F1}");
             sb.AppendLine("    }");
             sb.AppendLine("  },");
         }

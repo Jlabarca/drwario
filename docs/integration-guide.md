@@ -321,7 +321,9 @@ public class MyDashboard : EditorWindow
 |--------|-------------|
 | `AnalysisEngine(LLMConfig config = null)` | Create engine (null = rules-only) |
 | `AnalysisEngine.RegisterRule(IAnalysisRule)` | Add custom rule |
-| `AnalysisEngine.Analyze(ProfilingSession)` | Run full analysis (blocks if LLM enabled) |
+| `AnalysisEngine.Analyze(ProfilingSession)` | Run deterministic rules only (fast, sync) |
+| `AnalysisEngine.AnalyzeAsync(ProfilingSession)` | Run rules + AI analysis (async, non-blocking) |
 | `LLMPromptBuilder.AdditionalContext` | Static string for framework context injection |
+| `LLMPromptBuilder.BuildFullPromptForClipboard(session, report, question)` | Generate complete standalone prompt for any LLM |
 | `ReportHistory.Save(DiagnosticReport)` | Persist to disk |
 | `ReportHistory.ListReports()` | Get saved report summaries |

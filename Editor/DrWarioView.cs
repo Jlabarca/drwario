@@ -515,6 +515,79 @@ namespace DrWario.Editor
                 _sparklineElement.MarkDirtyRepaint();
             }
 
+            // Rendering stats card (from ProfilerRecorder data)
+            if (session != null && session.FrameCount > 0)
+            {
+                var frames = session.GetFrames();
+                bool hasRenderData = frames.Any(f => f.DrawCalls > 0);
+
+                // Bottleneck indicator
+                float avgCpu = frames.Average(f => f.CpuFrameTimeMs);
+                float avgGpu = frames.Where(f => f.GpuFrameTimeMs > 0).Select(f => f.GpuFrameTimeMs).DefaultIfEmpty(0).Average();
+
+                var statsCard = this.Q<VisualElement>("render-stats-card");
+                if (statsCard == null)
+                {
+                    statsCard = new VisualElement();
+                    statsCard.name = "render-stats-card";
+                    statsCard.style.backgroundColor = new StyleColor(new Color(0.16f, 0.16f, 0.20f));
+                    statsCard.style.marginBottom = 10;
+                    statsCard.style.paddingTop = 8;
+                    statsCard.style.paddingBottom = 8;
+                    statsCard.style.paddingLeft = 10;
+                    statsCard.style.paddingRight = 10;
+                    statsCard.style.borderLeftWidth = 3;
+                    // Insert after sparkline (before category container's parent)
+                    var parent = _categoryContainer.parent;
+                    int catIdx = parent.IndexOf(_categoryContainer);
+                    parent.Insert(catIdx, statsCard);
+                }
+                statsCard.Clear();
+
+                string bottleneck;
+                Color bottleneckColor;
+                if (avgGpu > 0 && avgCpu > 0)
+                {
+                    if (avgGpu > avgCpu * 1.3f) { bottleneck = "GPU-bound"; bottleneckColor = new Color(0.9f, 0.5f, 0.2f); }
+                    else if (avgCpu > avgGpu * 1.3f) { bottleneck = "CPU-bound"; bottleneckColor = new Color(0.9f, 0.7f, 0.2f); }
+                    else { bottleneck = "Balanced"; bottleneckColor = new Color(0.4f, 0.8f, 0.4f); }
+                }
+                else { bottleneck = "GPU data N/A"; bottleneckColor = new Color(0.5f, 0.5f, 0.5f); }
+
+                var headerRow = new VisualElement();
+                headerRow.style.flexDirection = FlexDirection.Row;
+                headerRow.style.marginBottom = 4;
+
+                var bnLabel = new Label($"Bottleneck: {bottleneck}");
+                bnLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+                bnLabel.style.color = bottleneckColor;
+                bnLabel.style.fontSize = 12;
+                headerRow.Add(bnLabel);
+
+                var timingLabel = new Label($"  CPU: {avgCpu:F1}ms  GPU: {(avgGpu > 0 ? $"{avgGpu:F1}ms" : "N/A")}");
+                timingLabel.style.fontSize = 10;
+                timingLabel.style.color = new Color(0.6f, 0.6f, 0.6f);
+                timingLabel.style.unityTextAlign = TextAnchor.MiddleLeft;
+                headerRow.Add(timingLabel);
+
+                statsCard.Add(headerRow);
+                statsCard.style.borderLeftColor = bottleneckColor;
+
+                if (hasRenderData)
+                {
+                    int avgDraw = (int)frames.Where(f => f.DrawCalls > 0).Average(f => f.DrawCalls);
+                    int avgBatch = (int)frames.Where(f => f.Batches > 0).Average(f => f.Batches);
+                    int avgSetPass = (int)frames.Where(f => f.SetPassCalls > 0).Average(f => f.SetPassCalls);
+                    long avgTris = (long)frames.Where(f => f.Triangles > 0).Average(f => f.Triangles);
+
+                    string renderInfo = $"Draw Calls: {avgDraw}  Batches: {avgBatch}  SetPass: {avgSetPass}  Triangles: {avgTris:N0}";
+                    var renderLabel = new Label(renderInfo);
+                    renderLabel.style.fontSize = 10;
+                    renderLabel.style.color = new Color(0.6f, 0.6f, 0.6f);
+                    statsCard.Add(renderLabel);
+                }
+            }
+
             // Category cards
             _categoryContainer.Clear();
             foreach (var kv in _lastReport.CategoryGrades)

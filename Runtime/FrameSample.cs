@@ -4,14 +4,28 @@ namespace DrWario.Runtime
 {
     public struct FrameSample
     {
+        // Timing
         public float Timestamp;
         public float DeltaTime;
         public float CpuFrameTimeMs;
         public float GpuFrameTimeMs;
+        public float RenderThreadMs;
+
+        // Memory
         public long GcAllocBytes;
         public long TotalHeapBytes;
         public long TextureMemoryBytes;
         public long MeshMemoryBytes;
+
+        // GC detail (from ProfilerRecorder, 0 if unavailable)
+        public int GcAllocCount;
+
+        // Rendering (from ProfilerRecorder, 0 if unavailable)
+        public int DrawCalls;
+        public int Batches;
+        public int SetPassCalls;
+        public int Triangles;
+        public int Vertices;
     }
 
     public struct BootStageTiming
