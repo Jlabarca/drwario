@@ -4,10 +4,15 @@ using DrWario.Runtime;
 
 namespace DrWario.Editor.Analysis.Rules
 {
-    public class BootStageRule : IAnalysisRule
+    public class BootStageRule : IAnalysisRule, IConfigurableRule
     {
         public string Category => "Boot";
         public string RuleId => "SLOW_BOOT";
+
+        public string ThresholdLabel => "Slow Stage Threshold (ms)";
+        public float DefaultThreshold => 2000f;
+        public float MinThreshold => 500f;
+        public float MaxThreshold => 10000f;
 
         private const long SlowStageMs = 2000;
         private const long TotalBootWarningMs = 8000;
@@ -37,7 +42,8 @@ namespace DrWario.Editor.Analysis.Rules
                                          "parallelizing independent operations, or deferring non-critical work.",
                         Metric = stage.DurationMs,
                         Threshold = SlowStageMs,
-                        FrameIndex = -1
+                        FrameIndex = -1,
+                        ScriptPath = "Runtime/BootTimingHook.cs"
                     });
                 }
 

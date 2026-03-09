@@ -11,10 +11,18 @@ namespace DrWario.Editor.Analysis
     {
         public DateTime GeneratedAt;
         public SessionMetadata Session;
+        public SceneCensus SceneCensus;
         public char OverallGrade;
         public float HealthScore;
         public Dictionary<string, char> CategoryGrades = new();
         public List<DiagnosticFinding> Findings = new();
+
+        public float AvgCpuTimeMs;
+        public float P95CpuTimeMs;
+        public float P99CpuTimeMs;
+        public float AvgGcAllocBytes;
+        public float AvgDrawCalls;
+        public float MemorySlope;
 
         public void ComputeGrades()
         {
@@ -84,6 +92,11 @@ namespace DrWario.Editor.Analysis
             sb.AppendLine($"Environment: {(Session.IsEditor ? "Editor" : "Build")}");
             if (Session.IsEditor && Session.Baseline.IsValid)
                 sb.AppendLine($"Baseline:  CPU {Session.Baseline.AvgCpuFrameTimeMs:F1}ms | GC {Session.Baseline.AvgGcAllocBytes}B/frame | Draw calls {Session.Baseline.AvgDrawCalls}");
+            if (SceneCensus.IsValid)
+            {
+                int totalLights = SceneCensus.DirectionalLights + SceneCensus.PointLights + SceneCensus.SpotLights + SceneCensus.AreaLights;
+                sb.AppendLine($"Scene:     {SceneCensus.TotalGameObjects} objects | {totalLights} lights | {SceneCensus.CanvasCount} canvases | {SceneCensus.RigidbodyCount} rigidbodies");
+            }
             sb.AppendLine();
             sb.AppendLine($"  Overall Grade: {OverallGrade}  ({HealthScore:F0}/100)");
             sb.AppendLine();
@@ -108,6 +121,10 @@ namespace DrWario.Editor.Analysis
                 sb.AppendLine($"{icon}{confLabel} {f.Title}");
                 sb.AppendLine($"     {f.Description}");
                 sb.AppendLine($"     -> {f.Recommendation}");
+                if (!string.IsNullOrEmpty(f.ScriptPath))
+                    sb.AppendLine($"     Script: {f.ScriptPath}{(f.ScriptLine > 0 ? $":{f.ScriptLine}" : "")}");
+                if (!string.IsNullOrEmpty(f.AssetPath))
+                    sb.AppendLine($"     Asset: {f.AssetPath}");
                 if (!string.IsNullOrEmpty(f.EnvironmentNote))
                     sb.AppendLine($"     Note: {f.EnvironmentNote}");
                 sb.AppendLine();
@@ -132,6 +149,12 @@ namespace DrWario.Editor.Analysis
             public float healthScore;
             public List<SerializableCategoryGrade> categoryGrades = new();
             public List<SerializableFinding> findings = new();
+            public float avgCpuTimeMs;
+            public float p95CpuTimeMs;
+            public float p99CpuTimeMs;
+            public float avgGcAllocBytes;
+            public float avgDrawCalls;
+            public float memorySlope;
 
             public SerializableReport(DiagnosticReport r)
             {
@@ -141,6 +164,12 @@ namespace DrWario.Editor.Analysis
                 isEditor = r.Session.IsEditor;
                 overallGrade = r.OverallGrade;
                 healthScore = r.HealthScore;
+                avgCpuTimeMs = r.AvgCpuTimeMs;
+                p95CpuTimeMs = r.P95CpuTimeMs;
+                p99CpuTimeMs = r.P99CpuTimeMs;
+                avgGcAllocBytes = r.AvgGcAllocBytes;
+                avgDrawCalls = r.AvgDrawCalls;
+                memorySlope = r.MemorySlope;
                 foreach (var kv in r.CategoryGrades)
                     categoryGrades.Add(new SerializableCategoryGrade { category = kv.Key, grade = kv.Value });
                 foreach (var f in r.Findings)
@@ -156,7 +185,11 @@ namespace DrWario.Editor.Analysis
                         recommendation = f.Recommendation,
                         metric = f.Metric,
                         threshold = f.Threshold,
-                        environmentNote = f.EnvironmentNote ?? ""
+                        environmentNote = f.EnvironmentNote ?? "",
+                        scriptPath = f.ScriptPath ?? "",
+                        scriptLine = f.ScriptLine,
+                        assetPath = f.AssetPath ?? "",
+                        affectedFrames = f.AffectedFrames
                     });
                 }
             }
@@ -182,6 +215,10 @@ namespace DrWario.Editor.Analysis
             public float metric;
             public float threshold;
             public string environmentNote;
+            public string scriptPath;
+            public int scriptLine;
+            public string assetPath;
+            public int[] affectedFrames;
         }
     }
 }

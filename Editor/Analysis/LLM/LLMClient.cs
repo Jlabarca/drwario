@@ -31,7 +31,7 @@ namespace DrWario.Editor.Analysis.LLM
             if (body == null)
                 return LLMResponse.Error($"Unsupported provider: {_config.Provider}");
 
-            Debug.Log($"[DrWario] Sending {body.Length} chars to {_config.Provider} ({_config.ModelId})...");
+            Debug.Log($"[DrWario] Sending {body.Length} chars to {_config.Provider} ({_config.ModelId}) at {endpoint}");
 
             try
             {
@@ -63,12 +63,17 @@ namespace DrWario.Editor.Analysis.LLM
                 }
 
                 string responseText = request.downloadHandler.text;
+                Debug.Log($"[DrWario] Raw response ({request.responseCode}): {responseText.Length} chars");
+
                 string content = ExtractContent(responseText);
 
                 if (content == null)
+                {
+                    Debug.LogWarning($"[DrWario] Failed to extract content. Raw response (first 500 chars): {responseText.Substring(0, Mathf.Min(responseText.Length, 500))}");
                     return LLMResponse.Error($"Failed to parse response from {_config.Provider}.");
+                }
 
-                Debug.Log($"[DrWario] Received {content.Length} chars from {_config.Provider}.");
+                Debug.Log($"[DrWario] Extracted {content.Length} chars from {_config.Provider}.");
                 return LLMResponse.Success(content);
             }
             catch (Exception e)
@@ -76,6 +81,144 @@ namespace DrWario.Editor.Analysis.LLM
                 Debug.LogWarning($"[DrWario] LLM exception: {e.Message}");
                 return LLMResponse.Error($"Exception: {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Sends a streaming request to Claude or OpenAI, invoking callbacks as findings
+        /// are parsed from the SSE stream. Falls back to non-streaming SendAsync for
+        /// Ollama/Custom providers.
+        /// </summary>
+        public async Task SendStreamingAsync(
+            string systemPrompt,
+            string userPrompt,
+            Action<DiagnosticFinding> onFindingParsed,
+            Action<string> onComplete,
+            Action<string> onError)
+        {
+            // Ollama and Custom don't reliably support SSE streaming — fall back to SendAsync
+            // (which handles its own rate limiting)
+            if (_config.Provider == LLMProvider.Ollama || _config.Provider == LLMProvider.Custom)
+            {
+                var response = await SendAsync(systemPrompt, userPrompt);
+                if (!response.IsSuccess)
+                {
+                    onError?.Invoke(response.ErrorMessage);
+                    return;
+                }
+                // Parse all findings from complete response
+                var findings = LLMResponseParser.Parse(response.Content);
+                foreach (var f in findings)
+                    onFindingParsed?.Invoke(f);
+                onComplete?.Invoke(response.Content);
+                return;
+            }
+
+            // Rate limiting for streaming providers (Claude/OpenAI)
+            var elapsed = (DateTime.UtcNow - _lastRequestTime).TotalSeconds;
+            if (elapsed < RateLimitSeconds)
+            {
+                onError?.Invoke($"Rate limited. Wait {RateLimitSeconds - (int)elapsed}s before retrying.");
+                return;
+            }
+
+            _lastRequestTime = DateTime.UtcNow;
+
+            string endpoint = _config.Endpoint;
+            string body = BuildStreamingRequestBody(systemPrompt, userPrompt);
+            if (body == null)
+            {
+                onError?.Invoke($"Unsupported provider for streaming: {_config.Provider}");
+                return;
+            }
+
+            Debug.Log($"[DrWario] Sending streaming request ({body.Length} chars) to {_config.Provider} ({_config.ModelId}) at {endpoint}");
+
+            try
+            {
+                var request = new UnityWebRequest(endpoint, "POST");
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
+
+                var sseHandler = new SseDownloadHandler(_config.Provider);
+                sseHandler.OnFindingParsed = onFindingParsed;
+                sseHandler.OnComplete = onComplete;
+                sseHandler.OnError = onError;
+
+                request.downloadHandler = sseHandler;
+                request.timeout = _config.TimeoutSeconds;
+
+                request.SetRequestHeader("Content-Type", "application/json");
+                SetAuthHeaders(request);
+
+                var operation = request.SendWebRequest();
+
+                while (!operation.isDone)
+                    await Task.Delay(100);
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    string errorDetail = request.error ?? "Unknown error";
+                    Debug.LogWarning($"[DrWario] Streaming request failed ({request.responseCode}): {errorDetail}");
+
+                    string errorMsg = request.responseCode switch
+                    {
+                        401 => "Invalid API key. Check DrWario settings.",
+                        429 => "Rate limited by provider. Try again in 60s.",
+                        _ => $"HTTP {request.responseCode}: {errorDetail}"
+                    };
+                    onError?.Invoke(errorMsg);
+                    return;
+                }
+
+                // If ReceiveData didn't fire OnComplete (e.g., connection closed without sentinel),
+                // fire it now with whatever was accumulated
+                Debug.Log($"[DrWario] Streaming request completed.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[DrWario] Streaming exception: {e.Message}");
+                onError?.Invoke($"Exception: {e.Message}");
+            }
+        }
+
+        private string BuildStreamingRequestBody(string systemPrompt, string userPrompt)
+        {
+            string escapedSystem = EscapeJsonString(systemPrompt);
+            string escapedUser = EscapeJsonString(userPrompt);
+            string model = _config.ModelId;
+
+            return _config.Provider switch
+            {
+                LLMProvider.Claude => BuildClaudeStreamingBody(escapedSystem, escapedUser, model),
+                LLMProvider.OpenAI => BuildOpenAIStreamingBody(escapedSystem, escapedUser, model),
+                _ => null
+            };
+        }
+
+        private string BuildClaudeStreamingBody(string system, string user, string model)
+        {
+            return $@"{{
+  ""model"": ""{model}"",
+  ""max_tokens"": 4096,
+  ""stream"": true,
+  ""system"": ""{system}"",
+  ""messages"": [
+    {{ ""role"": ""user"", ""content"": ""{user}"" }}
+  ]
+}}";
+        }
+
+        private string BuildOpenAIStreamingBody(string system, string user, string model)
+        {
+            return $@"{{
+  ""model"": ""{model}"",
+  ""max_tokens"": 4096,
+  ""stream"": true,
+  ""messages"": [
+    {{ ""role"": ""system"", ""content"": ""{system}"" }},
+    {{ ""role"": ""user"", ""content"": ""{user}"" }}
+  ],
+  ""temperature"": 0.3
+}}";
         }
 
         public async Task<bool> TestConnectionAsync()

@@ -1,4 +1,4 @@
-# DrWario - Claude Code Project Instructions
+﻿# DrWario - Claude Code Project Instructions
 
 ## Project Overview
 

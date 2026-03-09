@@ -14,9 +14,13 @@ namespace DrWario.Runtime
         private readonly List<BootStageTiming> _bootStages = new();
         private readonly List<AssetLoadTiming> _assetLoads = new();
         private readonly List<NetworkEvent> _networkEvents = new();
+        private readonly List<ProfilerMarkerSample> _profilerMarkers = new();
 
         public SessionMetadata Metadata;
+        public SceneCensus SceneCensus;
         public bool IsRecording { get; private set; }
+        public bool ProfilerWasRecording { get; set; }
+        public IReadOnlyList<ProfilerMarkerSample> ProfilerMarkers => _profilerMarkers;
 
         public int FrameCount => _frameCount;
         public int Capacity => _frameBuffer.Length;
@@ -127,6 +131,13 @@ namespace DrWario.Runtime
                 Bytes = bytes,
                 LatencyMs = latencyMs
             });
+        }
+
+        public void SetProfilerMarkers(List<ProfilerMarkerSample> markers)
+        {
+            _profilerMarkers.Clear();
+            if (markers != null)
+                _profilerMarkers.AddRange(markers);
         }
 
         public IReadOnlyList<BootStageTiming> BootStages => _bootStages;

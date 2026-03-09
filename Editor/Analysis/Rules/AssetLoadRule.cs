@@ -4,10 +4,15 @@ using DrWario.Runtime;
 
 namespace DrWario.Editor.Analysis.Rules
 {
-    public class AssetLoadRule : IAnalysisRule
+    public class AssetLoadRule : IAnalysisRule, IConfigurableRule
     {
         public string Category => "Assets";
         public string RuleId => "SLOW_ASSET_LOAD";
+
+        public string ThresholdLabel => "Slow Load Threshold (ms)";
+        public float DefaultThreshold => 500f;
+        public float MinThreshold => 100f;
+        public float MaxThreshold => 5000f;
 
         private const long SlowLoadMs = 500;
         private const long CriticalLoadMs = 2000;
@@ -43,7 +48,8 @@ namespace DrWario.Editor.Analysis.Rules
                                  "Consider reducing asset sizes or using lower-resolution fallbacks.",
                 Metric = maxMs,
                 Threshold = SlowLoadMs,
-                FrameIndex = -1
+                FrameIndex = -1,
+                AssetPath = slowest.AssetKey
             });
 
             return findings;

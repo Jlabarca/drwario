@@ -76,6 +76,16 @@ namespace DrWario.Editor
 
             session.SetEditorContext(baseline, sceneViewOpen, inspectorOpen, profilerOpen, gameViewCount);
 
+            // Capture scene census
+            session.SceneCensus = SceneCensusCapture.Capture();
+            if (session.SceneCensus.IsValid)
+            {
+                Debug.Log($"[DrWario] Scene census: {session.SceneCensus.TotalGameObjects} objects, " +
+                          $"{session.SceneCensus.TotalComponents} components, " +
+                          $"{session.SceneCensus.CanvasCount} canvases, " +
+                          $"{session.SceneCensus.DirectionalLights + session.SceneCensus.PointLights + session.SceneCensus.SpotLights + session.SceneCensus.AreaLights} lights");
+            }
+
             if (baseline.IsValid)
             {
                 Debug.Log($"[DrWario] Editor context attached — baseline: CPU {baseline.AvgCpuFrameTimeMs:F1}ms, " +

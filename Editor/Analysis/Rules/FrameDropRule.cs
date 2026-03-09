@@ -5,10 +5,15 @@ using DrWario.Runtime;
 
 namespace DrWario.Editor.Analysis.Rules
 {
-    public class FrameDropRule : IAnalysisRule
+    public class FrameDropRule : IAnalysisRule, IConfigurableRule
     {
         public string Category => "CPU";
         public string RuleId => "FRAME_DROP";
+
+        public string ThresholdLabel => "Target Frame Time (ms)";
+        public float DefaultThreshold => 16.67f;
+        public float MinThreshold => 8f;
+        public float MaxThreshold => 66.67f;
 
         private const float Target60FpsMs = 16.67f;
         private const float Target30FpsMs = 33.33f;
@@ -30,6 +35,14 @@ namespace DrWario.Editor.Analysis.Rules
             var frameTimes = frames.Select(f => f.CpuFrameTimeMs).OrderBy(t => t).ToArray();
             int dropCount = frameTimes.Count(t => t > targetMs);
             int severeCount = frameTimes.Count(t => t > SevereDropMs);
+
+            // Collect frame indices where drops occurred (using original frame order)
+            var dropFrames = new List<int>();
+            for (int i = 0; i < frames.Length; i++)
+            {
+                if (frames[i].CpuFrameTimeMs > targetMs)
+                    dropFrames.Add(i);
+            }
 
             float p95 = frameTimes[(int)(frameTimes.Length * 0.95f)];
             float p99 = frameTimes[(int)(frameTimes.Length * 0.99f)];
@@ -86,7 +99,8 @@ namespace DrWario.Editor.Analysis.Rules
                 Threshold = targetMs,
                 FrameIndex = -1,
                 Confidence = confidence,
-                EnvironmentNote = envNote
+                EnvironmentNote = envNote,
+                AffectedFrames = dropFrames.Take(100).ToArray()
             });
 
             return findings;

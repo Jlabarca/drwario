@@ -30,5 +30,11 @@ namespace DrWario.Editor.Analysis
         public int FrameIndex; // -1 if not frame-specific
         public Confidence Confidence;
         public string EnvironmentNote; // Optional context about editor overhead impact
+
+        // Source references — optional links to scripts and assets related to this finding
+        public string ScriptPath;  // Relative Unity asset path (e.g., "Assets/Scripts/Foo.cs"), null if unknown
+        public int ScriptLine;     // Line number in the script, 0 if unknown
+        public string AssetPath;   // Relative Unity asset path (e.g., "Assets/Textures/Bar.png"), null if unknown
+        public int[] AffectedFrames; // Frame indices where this finding's condition was detected, null if N/A
     }
 }

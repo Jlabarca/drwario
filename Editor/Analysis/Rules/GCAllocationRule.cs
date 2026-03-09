@@ -4,10 +4,15 @@ using DrWario.Runtime;
 
 namespace DrWario.Editor.Analysis.Rules
 {
-    public class GCAllocationRule : IAnalysisRule
+    public class GCAllocationRule : IAnalysisRule, IConfigurableRule
     {
         public string Category => "Memory";
         public string RuleId => "GC_SPIKE";
+
+        public string ThresholdLabel => "GC Spike Threshold (bytes)";
+        public float DefaultThreshold => 1024f;
+        public float MinThreshold => 256f;
+        public float MaxThreshold => 16384f;
 
         private const long SpikeThresholdBytes = 1024; // 1KB per frame
         private const float CriticalSpikeRatio = 0.2f; // >20% of frames
@@ -29,6 +34,7 @@ namespace DrWario.Editor.Analysis.Rules
             int rawSpikeCount = 0;
             long worstAlloc = 0;
             int worstFrame = -1;
+            var spikeFrames = new List<int>();
 
             for (int i = 0; i < frames.Length; i++)
             {
@@ -38,6 +44,7 @@ namespace DrWario.Editor.Analysis.Rules
                 if (frames[i].GcAllocBytes > effectiveThreshold)
                 {
                     spikeCount++;
+                    spikeFrames.Add(i);
                     if (frames[i].GcAllocBytes > worstAlloc)
                     {
                         worstAlloc = frames[i].GcAllocBytes;
@@ -95,7 +102,8 @@ namespace DrWario.Editor.Analysis.Rules
                 Threshold = SpikeThresholdBytes,
                 FrameIndex = worstFrame,
                 Confidence = confidence,
-                EnvironmentNote = envNote
+                EnvironmentNote = envNote,
+                AffectedFrames = spikeFrames.Take(100).ToArray()
             });
 
             return findings;

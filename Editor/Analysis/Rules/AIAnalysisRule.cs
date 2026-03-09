@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DrWario.Runtime;
@@ -59,7 +60,9 @@ namespace DrWario.Editor.Analysis.Rules
             string systemPrompt = LLMPromptBuilder.BuildSystemPrompt();
             string userPrompt = LLMPromptBuilder.BuildUserPrompt(session, _ruleFindings ?? new List<DiagnosticFinding>());
 
-            Debug.Log($"[DrWario] LLM prompt: {userPrompt.Length} chars ({EstimateTokens(userPrompt)} est. tokens)");
+            Debug.Log($"[DrWario] LLM system prompt: {systemPrompt.Length} chars");
+            Debug.Log($"[DrWario] LLM user prompt: {userPrompt.Length} chars ({EstimateTokens(userPrompt)} est. tokens)");
+            Debug.Log($"[DrWario] === USER PROMPT START ===\n{userPrompt}\n=== USER PROMPT END ===");
 
             var response = await client.SendAsync(systemPrompt, userPrompt);
 
@@ -70,11 +73,66 @@ namespace DrWario.Editor.Analysis.Rules
                 return new List<DiagnosticFinding>();
             }
 
+            Debug.Log($"[DrWario] === LLM RESPONSE START ===\n{response.Content}\n=== LLM RESPONSE END ===");
+
             var findings = LLMResponseParser.Parse(response.Content);
             LastCallSucceeded = findings.Count > 0;
 
             Debug.Log($"[DrWario] LLM returned {findings.Count} findings.");
+            foreach (var f in findings)
+            {
+                string refs = "";
+                if (!string.IsNullOrEmpty(f.ScriptPath)) refs += $" script={f.ScriptPath}:{f.ScriptLine}";
+                if (!string.IsNullOrEmpty(f.AssetPath)) refs += $" asset={f.AssetPath}";
+                Debug.Log($"[DrWario]   [{f.Severity}] {f.Title} (confidence={f.Confidence}){refs}");
+            }
             return findings;
+        }
+
+        /// <summary>
+        /// Streaming variant of AnalyzeAsync. For Claude/OpenAI providers, uses SSE streaming
+        /// to emit findings progressively via onFindingParsed callback. For Ollama/Custom,
+        /// falls back to non-streaming SendAsync.
+        /// </summary>
+        public async Task AnalyzeStreamingAsync(
+            ProfilingSession session,
+            Action<DiagnosticFinding> onFindingParsed,
+            Action<string> onComplete = null,
+            Action<string> onError = null)
+        {
+            var client = new LLMClient(_config);
+
+            string systemPrompt = LLMPromptBuilder.BuildSystemPrompt();
+            string userPrompt = LLMPromptBuilder.BuildUserPrompt(session, _ruleFindings ?? new List<DiagnosticFinding>());
+
+            Debug.Log($"[DrWario] LLM streaming system prompt: {systemPrompt.Length} chars");
+            Debug.Log($"[DrWario] LLM streaming user prompt: {userPrompt.Length} chars ({EstimateTokens(userPrompt)} est. tokens)");
+
+            var allFindings = new List<DiagnosticFinding>();
+
+            await client.SendStreamingAsync(
+                systemPrompt,
+                userPrompt,
+                onFindingParsed: finding =>
+                {
+                    allFindings.Add(finding);
+                    Debug.Log($"[DrWario] Streaming finding: [{finding.Severity}] {finding.Title}");
+                    onFindingParsed?.Invoke(finding);
+                },
+                onComplete: content =>
+                {
+                    LastCallSucceeded = allFindings.Count > 0;
+                    Debug.Log($"[DrWario] Streaming complete. {allFindings.Count} findings received.");
+                    onComplete?.Invoke(content);
+                },
+                onError: error =>
+                {
+                    LastError = error;
+                    LastCallSucceeded = false;
+                    Debug.LogWarning($"[DrWario] Streaming LLM analysis failed: {error}");
+                    onError?.Invoke(error);
+                }
+            );
         }
 
         private static int EstimateTokens(string text)

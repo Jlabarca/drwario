@@ -26,6 +26,19 @@ namespace DrWario.Runtime
         public int SetPassCalls;
         public int Triangles;
         public int Vertices;
+
+        // Extended subsystem counters (from ProfilerRecorder, 0 if unavailable)
+        public int PhysicsActiveBodies;
+        public int PhysicsKinematicBodies;
+        public int PhysicsContacts;
+        public int AudioVoiceCount;
+        public float AudioDSPLoad;
+        public int AnimatorCount;
+        public int UICanvasRebuilds;
+        public int UILayoutRebuilds;
+
+        // Absolute frame number for Profiler frame navigation
+        public int FrameNumber;
     }
 
     public struct BootStageTiming
@@ -88,6 +101,8 @@ namespace DrWario.Runtime
         public int AvgDrawCalls;
         public int AvgBatches;
         public int AvgSetPassCalls;
+        public int AvgUICanvasRebuilds;
+        public int AvgUILayoutRebuilds;
         public int SampleCount;
         public bool IsValid;
     }

@@ -39,7 +39,7 @@ Then add the local path via Package Manager.
 
 **Window → DrWario → Diagnostics**
 
-The DrWario window opens with 6 tabs: Summary, Findings, Recommendations, History, Ask Doctor, and LLM Settings.
+The DrWario window opens with 7 tabs: Summary, Findings, Recommendations, Timeline, History, Ask Doctor, and LLM Settings.
 
 ### 2. Profile your game
 
@@ -52,7 +52,7 @@ The status bar shows how many frames were captured.
 
 ### 3. Analyze
 
-Click **Analyze**. DrWario runs 6 built-in diagnostic rules and produces:
+Click **Analyze**. DrWario runs 8 built-in diagnostic rules and produces:
 
 - An **overall grade** (A through F)
 - **Per-category grades** (CPU, Memory, Boot, Assets, Network)
@@ -63,6 +63,7 @@ Click **Analyze**. DrWario runs 6 built-in diagnostic rules and produces:
 
 - **Export JSON** — machine-readable report for CI/automation
 - **Export Text** — human-readable ASCII report for sharing
+- **Export HTML** — self-contained HTML file with embedded charts, shareable in any browser
 
 ---
 
@@ -117,6 +118,12 @@ The main dashboard showing:
 - **Health score** (0–100)
 - **Category cards** — one per affected category with its grade and finding count
 - **Frame time sparkline** — visual timeline of CPU frame times with 60fps (green) and 30fps (yellow) reference lines
+- **Interactive charts** (v2.0):
+  - **Memory trajectory** — line chart of heap usage over time with leak trend line
+  - **Frame time distribution** — histogram of frame times with target FPS markers
+  - **GC allocation timeline** — bar chart of per-frame GC spikes
+  - **CPU vs GPU** — side-by-side comparison bar chart
+  - All charts support hover tooltips showing exact values
 
 ### Findings
 
@@ -127,6 +134,10 @@ All diagnostic findings sorted by severity:
 - **Info** (blue) — minor notes or optimization opportunities
 
 Each finding card shows severity badge, title, description, and category tag.
+
+**Clickable source references** (v2.0): Findings that reference specific scripts or assets display clickable links:
+- **Script links** — click to open the script at the exact line in your IDE
+- **Asset links** — click to ping (highlight) the asset in the Project window
 
 Use **Copy Report to Clipboard** to copy the full text report for sharing or pasting into an LLM.
 
@@ -139,6 +150,18 @@ Findings grouped by category with actionable fix suggestions. Each recommendatio
 - Specific action to take (e.g., "Reduce per-frame allocations. Check for string concatenation in Update()...")
 
 Use **Copy Recommendations to Clipboard** to copy all recommendations for sharing.
+
+### Data Tables (v2.0)
+
+Sortable data tables appear in the Findings tab for drill-down analysis:
+
+- **Slowest frames** — top frames by CPU time, with frame index and GC allocation
+- **Top GC allocation frames** — frames with highest GC bytes, sortable by allocation size
+- **Asset load times** — all recorded asset loads sorted by duration
+- **Boot stage breakdown** — each boot stage with duration, status, and timing
+- **Network events** — recorded network events with type, size, and latency
+
+Click any column header to sort. Tables display "No data collected" when no relevant data was captured.
 
 ### History
 
@@ -186,7 +209,7 @@ Click **Test Connection** to verify your setup.
 
 ## Setting Up AI Analysis
 
-AI analysis is **optional**. The 6 deterministic rules always run. The LLM adds deeper correlation analysis.
+AI analysis is **optional**. The 8 deterministic rules always run (6 original + 2 added in v2.0). The LLM adds deeper correlation analysis.
 
 ### Claude (Anthropic)
 
@@ -232,6 +255,8 @@ Only **statistical summaries** — never source code:
 - Boot pipeline stage durations
 - Top 10 slowest asset loads
 - Pre-analysis findings from the deterministic rules
+- Extended subsystem counters (v2.0): physics bodies/contacts, audio voices/DSP load, animation updates, UI canvas/layout rebuilds
+- Scene census (v2.0): GameObject count, component distribution, lights by type, canvas/camera/particle/LOD/rigidbody counts
 
 ---
 
@@ -386,6 +411,76 @@ var report = engine.Analyze(session);
 
 ---
 
+## Using DrWario with Unity Profiler & Frame Debugger
+
+DrWario is a **complement** to Unity's built-in Profiler and Frame Debugger, not a replacement. Here's how they work together:
+
+### Workflow: DrWario first, then Profiler deep-dive
+
+1. **Run DrWario** — profile your game for 10–60 seconds and click Analyze
+2. **Read the findings** — DrWario tells you *what* is wrong (e.g., "GC spikes in 15% of frames", "frame drops exceeding 50ms")
+3. **Open Unity Profiler** to investigate *why* — use DrWario findings to know where to look
+
+### Using DrWario findings with the Unity Profiler
+
+DrWario captures high-level metrics per frame (CPU time, GPU time, GC allocations, draw calls, etc.) but doesn't capture the per-function call stacks that Unity's Profiler provides. Use them together:
+
+| DrWario finding | What to check in Unity Profiler |
+|---|---|
+| Frame drops / high CPU time | **CPU Usage module** → expand the timeline to find the spike frames → drill into the call stack to find expensive methods |
+| GC allocation spikes | **CPU Usage module** → enable **GC.Alloc** column → sort by allocation size → find which methods allocate |
+| Memory leak detected | **Memory Profiler** (separate package) → take snapshots at session start and end → compare to find leaked objects |
+| High draw calls / low batching | **Rendering module** → check batches, set pass calls, shadow casters |
+| Boot stage slow | **CPU Usage module** → record during startup → look at the flagged stage name in the timeline |
+
+### Using DrWario findings with the Frame Debugger
+
+The Frame Debugger (**Window → Analysis → Frame Debugger**) shows exactly what gets drawn each frame and why batches break. Use it when DrWario reports:
+
+- **High draw call count** — Step through the Frame Debugger to see why calls aren't batching (different materials, dynamic batching limits, GPU instancing not enabled)
+- **High set pass calls** — Each set pass call means a material/shader switch. Frame Debugger shows which objects cause switches
+- **GPU-bound bottleneck** — Frame Debugger reveals overdraw, expensive shaders, and unnecessary render passes
+
+### Typical investigation flow
+
+```
+DrWario: "Critical: 12 severe frame drops (>50ms), P99 = 67ms"
+   ↓
+Open Unity Profiler → CPU Usage → find the 67ms frame
+   ↓
+Expand call stack → Physics.Simulate takes 45ms
+   ↓
+DrWario extended counters: "avgActiveBodies: 847, avgContacts: 2340"
+   ↓
+Action: reduce physics bodies, increase fixed timestep, or use layers to limit collision pairs
+```
+
+```
+DrWario: "Warning: Draw calls avg 1200, batching efficiency 23%"
+   ↓
+Open Frame Debugger → step through draw calls
+   ↓
+See many small meshes with unique materials breaking batches
+   ↓
+Action: use GPU instancing, merge meshes, or use material property blocks
+```
+
+### What DrWario reads from the Profiler automatically
+
+DrWario uses Unity's `ProfilerRecorder` API to read counters directly — you don't need to have the Profiler window open. The data DrWario captures includes:
+
+- **CPU/GPU frame timing** — from `FrameTimingManager`
+- **GC allocations** — bytes and count per frame
+- **Rendering stats** — draw calls, batches, set pass calls, triangles, vertices
+- **Physics** — active/kinematic bodies, contacts (v2.0)
+- **Audio** — voice count, DSP load (v2.0)
+- **Animation** — active animator count (v2.0)
+- **UI** — canvas rebuilds, layout rebuilds (v2.0)
+
+**Note:** Having the Profiler window open adds editor overhead. DrWario measures an editor baseline before Play Mode to help the AI adjust for this, but for the most accurate results, close the Profiler window while DrWario is recording.
+
+---
+
 ## Troubleshooting
 
 ### "Enter Play Mode before starting profiling"
@@ -411,6 +506,63 @@ Your application is running clean — congratulations! The grade will be A (100/
 ### API key not saving
 
 API keys are stored per-machine in `EditorPrefs` with XOR obfuscation using `SystemInfo.deviceUniqueIdentifier`. Keys are not portable across machines. If you change hardware, re-enter your key.
+
+---
+
+## v3.0 Features
+
+### Report Comparison
+
+Compare two saved reports to measure optimization impact:
+
+1. Go to the **History** tab
+2. Click **Compare** on any saved report
+3. Select a second report to compare against
+4. View side-by-side grade deltas, metric changes, and finding diff (Fixed/New/Persists)
+
+### Event Timeline
+
+The **Timeline** tab shows a horizontal scrollable timeline with color-coded lanes:
+
+- **CPU** (blue) — frame spikes exceeding 1.5x target frame time
+- **GC** (orange) — GC allocations exceeding 1KB
+- **Boot** (green) — boot stage durations
+- **Assets** (purple) — asset load events
+- **Network** (gray) — network events
+
+Interactions: mouse wheel to zoom, click and drag to pan, hover for event details.
+
+### Profiler Marker Capture
+
+DrWario automatically captures the top 20 most expensive profiler markers per session using `ProfilerRecorder`. These are included in the LLM prompt, enabling AI findings that reference specific subsystems (e.g., "Physics.Simulate is consuming 70% of your frame budget").
+
+### Streaming LLM Responses
+
+When using Claude or OpenAI providers, AI findings now stream progressively — the first finding may appear within 3–5 seconds. Ollama and Custom providers fall back to the previous blocking behavior.
+
+### Show in Profiler
+
+Findings that reference specific frame indices include a "Show in Profiler" link. Clicking it opens Unity's Profiler window and navigates to that exact frame. Requires the Unity Profiler to have been recording during the DrWario session.
+
+### Rule Management
+
+In the **LLM Settings** tab, a Rules section lets you:
+
+- Toggle individual analysis rules on/off
+- Adjust thresholds for configurable rules (GC spike threshold, frame drop target, etc.)
+- Settings persist via `EditorPrefs`
+
+### Expandable Finding Cards
+
+Click any finding card to expand it and see:
+
+- List of affected frame indices
+- Related findings from the same category
+- "Show in Profiler" links for frame-specific findings
+
+### HTML Report Export
+
+Click **Export HTML** to generate a self-contained HTML file with embedded CSS and inline SVG charts. The file opens in any browser — no Unity required.
 
 ---
 

@@ -1,7 +1,7 @@
 {
     "name": "com.jlabarca.drwario",
     "displayName": "DrWario",
-    "version": "1.0.0",
+    "version": "3.0.0",
     "unity": "2022.3",
     "description": "Runtime performance diagnostics for Unity with AI-powered analysis.",
     "author": { "name": "Jlabarca", "url": "https://github.com/Jlabarca" },

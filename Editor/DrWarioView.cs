@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using DrWario.Editor.Analysis;
 using DrWario.Editor.Analysis.LLM;
+using DrWario.Editor.UI;
 using DrWario.Runtime;
 
 namespace DrWario.Editor
@@ -32,9 +33,19 @@ namespace DrWario.Editor
         private VisualElement _sparklineElement;
         private float[] _sparklineData;
         private Button _startBtn, _stopBtn, _analyzeBtn;
+        private TimelineElement _timelineElement;
 
         private DiagnosticReport _lastReport;
         private readonly LLMConfig _llmConfig = new();
+        private AnalysisEngine _analysisEngine;
+        private bool _isStreaming;
+        private Label _streamingIndicator;
+        private HashSet<VisualElement> _expandedCards = new();
+        private VisualElement _rulesContainer;
+
+        // Comparison state
+        private DiagnosticReport _selectedCompareReport;
+        private string _selectedCompareLabel;
 
         // LLM settings fields
         private PopupField<string> _providerField;
@@ -88,6 +99,10 @@ namespace DrWario.Editor
             exportTextBtn.style.height = 28;
             toolbar.Add(exportTextBtn);
 
+            var exportHtmlBtn = new Button(OnExportHtml) { text = "Export HTML" };
+            exportHtmlBtn.style.height = 28;
+            toolbar.Add(exportHtmlBtn);
+
             // Status
             _statusLabel = new Label("Idle. Enter Play Mode and click Start Profiling.");
             _statusLabel.style.marginBottom = 10;
@@ -110,17 +125,19 @@ namespace DrWario.Editor
             CreateTabButton("Summary", () => ShowSection(0), tabContainer);
             CreateTabButton("Findings", () => ShowSection(1), tabContainer);
             CreateTabButton("Recommendations", () => ShowSection(2), tabContainer);
-            CreateTabButton("History", () => { ShowSection(3); RefreshHistory(); }, tabContainer);
-            CreateTabButton("Ask Doctor", () => ShowSection(4), tabContainer);
-            CreateTabButton("LLM Settings", () => ShowSection(5), tabContainer);
+            CreateTabButton("Timeline", () => { ShowSection(3); PopulateTimeline(); }, tabContainer);
+            CreateTabButton("History", () => { ShowSection(4); RefreshHistory(); }, tabContainer);
+            CreateTabButton("Ask Doctor", () => ShowSection(5), tabContainer);
+            CreateTabButton("LLM Settings", () => ShowSection(6), tabContainer);
 
-            _sections = new VisualElement[6];
+            _sections = new VisualElement[7];
             _sections[0] = CreateSummarySection();
             _sections[1] = CreateFindingsSection();
             _sections[2] = CreateRecommendationsSection();
-            _sections[3] = CreateHistorySection();
-            _sections[4] = CreateAskSection();
-            _sections[5] = CreateSettingsSection();
+            _sections[3] = CreateTimelineSection();
+            _sections[4] = CreateHistorySection();
+            _sections[5] = CreateAskSection();
+            _sections[6] = CreateSettingsSection();
 
             foreach (var s in _sections) contentArea.Add(s);
             ShowSection(0);
@@ -231,6 +248,91 @@ namespace DrWario.Editor
             _recommendationsContainer.style.paddingRight = 10;
             scroll.Add(_recommendationsContainer);
             return scroll;
+        }
+
+        private VisualElement CreateTimelineSection()
+        {
+            var container = new VisualElement();
+            container.style.flexGrow = 1;
+            container.style.paddingTop = 10;
+            container.style.paddingLeft = 10;
+            container.style.paddingRight = 10;
+            container.style.paddingBottom = 10;
+
+            var header = new Label("Event Timeline");
+            header.style.unityFontStyleAndWeight = FontStyle.Bold;
+            header.style.fontSize = 13;
+            header.style.marginBottom = 4;
+            container.Add(header);
+
+            var legend = new VisualElement();
+            legend.style.flexDirection = FlexDirection.Row;
+            legend.style.flexWrap = Wrap.Wrap;
+            legend.style.marginBottom = 6;
+
+            var legendItems = new (string label, Color color)[]
+            {
+                ("CPU Spikes", new Color(0.267f, 0.533f, 1f)),
+                ("GC Alloc", new Color(1f, 0.533f, 0.267f)),
+                ("Boot", new Color(0.267f, 0.733f, 0.267f)),
+                ("Assets", new Color(0.667f, 0.267f, 1f)),
+                ("Network", new Color(0.533f, 0.533f, 0.533f))
+            };
+
+            foreach (var (label, color) in legendItems)
+            {
+                var item = new VisualElement();
+                item.style.flexDirection = FlexDirection.Row;
+                item.style.alignItems = Align.Center;
+                item.style.marginRight = 12;
+
+                var swatch = new VisualElement();
+                swatch.style.width = 10;
+                swatch.style.height = 10;
+                swatch.style.backgroundColor = new StyleColor(color);
+                swatch.style.borderBottomLeftRadius = 2;
+                swatch.style.borderBottomRightRadius = 2;
+                swatch.style.borderTopLeftRadius = 2;
+                swatch.style.borderTopRightRadius = 2;
+                swatch.style.marginRight = 4;
+                item.Add(swatch);
+
+                var lbl = new Label(label);
+                lbl.style.fontSize = 10;
+                lbl.style.color = new Color(0.7f, 0.7f, 0.7f);
+                item.Add(lbl);
+
+                legend.Add(item);
+            }
+            container.Add(legend);
+
+            var hint = new Label("Scroll to zoom, drag to pan");
+            hint.style.fontSize = 10;
+            hint.style.color = new Color(0.5f, 0.5f, 0.5f);
+            hint.style.marginBottom = 6;
+            container.Add(hint);
+
+            _timelineElement = new TimelineElement();
+            _timelineElement.style.height = 250;
+            _timelineElement.style.flexGrow = 1;
+            container.Add(_timelineElement);
+
+            return container;
+        }
+
+        private void PopulateTimeline()
+        {
+            if (_timelineElement == null) return;
+
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || session.FrameCount == 0)
+            {
+                _timelineElement.SetEvents(null);
+                return;
+            }
+
+            var events = TimelineEventBuilder.Build(session);
+            _timelineElement.SetEvents(events);
         }
 
         private VisualElement CreateSettingsSection()
@@ -358,8 +460,156 @@ namespace DrWario.Editor
 
             _settingsContainer.Add(infoCard);
 
+            // Rule Management section
+            var rulesSeparator = new VisualElement();
+            rulesSeparator.style.height = 1;
+            rulesSeparator.style.backgroundColor = new StyleColor(new Color(0.3f, 0.3f, 0.3f));
+            rulesSeparator.style.marginTop = 20;
+            rulesSeparator.style.marginBottom = 10;
+            _settingsContainer.Add(rulesSeparator);
+
+            var rulesHeader = new Label("Rule Management");
+            rulesHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+            rulesHeader.style.fontSize = 14;
+            rulesHeader.style.marginBottom = 5;
+            _settingsContainer.Add(rulesHeader);
+
+            var rulesDesc = new Label("Enable or disable individual analysis rules. " +
+                                     "For configurable rules, adjust the detection threshold.");
+            rulesDesc.style.whiteSpace = WhiteSpace.Normal;
+            rulesDesc.style.fontSize = 11;
+            rulesDesc.style.color = new Color(0.6f, 0.6f, 0.6f);
+            rulesDesc.style.marginBottom = 10;
+            _settingsContainer.Add(rulesDesc);
+
+            _rulesContainer = new VisualElement();
+            _settingsContainer.Add(_rulesContainer);
+            PopulateRulesUI();
+
             UpdateApiKeyVisibility();
             return scroll;
+        }
+
+        private void PopulateRulesUI()
+        {
+            if (_rulesContainer == null) return;
+            _rulesContainer.Clear();
+
+            // Use a temporary engine to get all registered rules
+            var tempEngine = _analysisEngine ?? new AnalysisEngine();
+            var rules = tempEngine.RegisteredRules;
+
+            foreach (var rule in rules)
+            {
+                var ruleRow = new VisualElement();
+                ruleRow.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.18f));
+                ruleRow.style.marginBottom = 4;
+                ruleRow.style.paddingTop = 6;
+                ruleRow.style.paddingBottom = 6;
+                ruleRow.style.paddingLeft = 10;
+                ruleRow.style.paddingRight = 10;
+                ruleRow.style.borderLeftWidth = 2;
+                ruleRow.style.borderLeftColor = RuleConfig.IsEnabled(rule.RuleId)
+                    ? new Color(0.4f, 0.8f, 0.4f)
+                    : new Color(0.4f, 0.4f, 0.4f);
+
+                // Top row: toggle + rule name + category
+                var topRow = new VisualElement();
+                topRow.style.flexDirection = FlexDirection.Row;
+                topRow.style.alignItems = Align.Center;
+
+                string ruleId = rule.RuleId;
+                var capturedRow = ruleRow;
+
+                var enableToggle = new Toggle { value = RuleConfig.IsEnabled(ruleId) };
+                enableToggle.style.marginRight = 8;
+                enableToggle.RegisterValueChangedCallback(evt =>
+                {
+                    RuleConfig.SetEnabled(ruleId, evt.newValue);
+                    capturedRow.style.borderLeftColor = evt.newValue
+                        ? new Color(0.4f, 0.8f, 0.4f)
+                        : new Color(0.4f, 0.4f, 0.4f);
+                });
+                topRow.Add(enableToggle);
+
+                var ruleNameLabel = new Label(rule.RuleId);
+                ruleNameLabel.style.flexGrow = 1;
+                ruleNameLabel.style.fontSize = 11;
+                ruleNameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+                topRow.Add(ruleNameLabel);
+
+                var ruleCatLabel = new Label($"[{rule.Category}]");
+                ruleCatLabel.style.fontSize = 10;
+                ruleCatLabel.style.color = new Color(0.5f, 0.5f, 0.5f);
+                topRow.Add(ruleCatLabel);
+
+                ruleRow.Add(topRow);
+
+                // Threshold slider for IConfigurableRule
+                if (rule is IConfigurableRule configurable)
+                {
+                    var thresholdRow = new VisualElement();
+                    thresholdRow.style.flexDirection = FlexDirection.Row;
+                    thresholdRow.style.alignItems = Align.Center;
+                    thresholdRow.style.marginTop = 4;
+                    thresholdRow.style.marginLeft = 28;
+
+                    var thresholdLabel = new Label(configurable.ThresholdLabel + ":");
+                    thresholdLabel.style.fontSize = 10;
+                    thresholdLabel.style.color = new Color(0.6f, 0.6f, 0.6f);
+                    thresholdLabel.style.width = 120;
+                    thresholdRow.Add(thresholdLabel);
+
+                    float currentThreshold = RuleConfig.GetThreshold(ruleId, configurable.DefaultThreshold);
+
+                    var valueLabel = new Label(currentThreshold.ToString("F1"));
+                    valueLabel.style.fontSize = 10;
+                    valueLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
+                    valueLabel.style.width = 50;
+                    valueLabel.style.unityTextAlign = TextAnchor.MiddleRight;
+
+                    var slider = new Slider(configurable.MinThreshold, configurable.MaxThreshold);
+                    slider.value = currentThreshold;
+                    slider.style.flexGrow = 1;
+                    slider.style.marginLeft = 4;
+                    slider.style.marginRight = 4;
+
+                    string capturedRuleId = ruleId;
+                    var capturedValueLabel = valueLabel;
+                    slider.RegisterValueChangedCallback(evt =>
+                    {
+                        RuleConfig.SetThreshold(capturedRuleId, evt.newValue);
+                        capturedValueLabel.text = evt.newValue.ToString("F1");
+                    });
+
+                    thresholdRow.Add(slider);
+                    thresholdRow.Add(valueLabel);
+
+                    var resetThresholdBtn = new Button(() =>
+                    {
+                        RuleConfig.SetThreshold(capturedRuleId, configurable.DefaultThreshold);
+                        slider.value = configurable.DefaultThreshold;
+                    }) { text = "Reset" };
+                    resetThresholdBtn.style.height = 18;
+                    resetThresholdBtn.style.fontSize = 9;
+                    thresholdRow.Add(resetThresholdBtn);
+
+                    ruleRow.Add(thresholdRow);
+                }
+
+                _rulesContainer.Add(ruleRow);
+            }
+
+            // Reset All button
+            var resetAllBtn = new Button(() =>
+            {
+                foreach (var rule in rules)
+                    RuleConfig.ResetRule(rule.RuleId);
+                PopulateRulesUI();
+            }) { text = "Reset All Rules to Defaults" };
+            resetAllBtn.style.height = 24;
+            resetAllBtn.style.marginTop = 8;
+            _rulesContainer.Add(resetAllBtn);
         }
 
         private void UpdateApiKeyVisibility()
@@ -438,25 +688,75 @@ namespace DrWario.Editor
             _statusLabel.text = "Analyzing...";
             _statusLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
 
-            var engine = new AnalysisEngine(_llmConfig);
+            _analysisEngine = new AnalysisEngine(_llmConfig);
 
-            if (_llmConfig.IsConfigured)
+            bool useStreaming = _llmConfig.IsConfigured &&
+                (_llmConfig.Provider == LLMProvider.Claude || _llmConfig.Provider == LLMProvider.OpenAI);
+
+            if (useStreaming)
             {
-                // Async path: rules run instantly, then AI runs without blocking
-                _statusLabel.text = "Analyzing... (rule-based done, waiting for AI)";
-                _lastReport = await engine.AnalyzeAsync(session);
+                // Streaming path: rules run instantly, then AI findings arrive progressively
+                _statusLabel.text = "Analyzing... (rule-based done, streaming AI findings)";
+                _isStreaming = true;
+                ShowStreamingIndicator(true);
 
-                string aiStatus = engine.AICallSucceeded
+                // Show deterministic findings immediately
+                _lastReport = _analysisEngine.Analyze(session);
+                PopulateSummary();
+                PopulateFindings();
+                PopulateRecommendations();
+
+                // Subscribe to streaming findings
+                _analysisEngine.OnStreamingFindingReceived += OnStreamingFinding;
+
+                try
+                {
+                    _lastReport = await _analysisEngine.AnalyzeStreamingAsync(session);
+                }
+                finally
+                {
+                    _analysisEngine.OnStreamingFindingReceived -= OnStreamingFinding;
+                    _isStreaming = false;
+                    ShowStreamingIndicator(false);
+                }
+
+                string aiStatus = _analysisEngine.AICallSucceeded
                     ? " + AI insights"
-                    : $" (AI: {engine.AIError ?? "no findings"})";
+                    : $" (AI: {_analysisEngine.AIError ?? "no findings"})";
 
                 _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
+
+                // Final full UI refresh with deduplicated findings
+                PopulateSummary();
+                PopulateFindings();
+                PopulateRecommendations();
+                PopulateTimeline();
+            }
+            else if (_llmConfig.IsConfigured)
+            {
+                // Async path (Ollama/Custom): rules run instantly, then AI runs without blocking
+                _statusLabel.text = "Analyzing... (rule-based done, waiting for AI)";
+                _lastReport = await _analysisEngine.AnalyzeAsync(session);
+
+                string aiStatus = _analysisEngine.AICallSucceeded
+                    ? " + AI insights"
+                    : $" (AI: {_analysisEngine.AIError ?? "no findings"})";
+
+                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
+                PopulateSummary();
+                PopulateFindings();
+                PopulateRecommendations();
+                PopulateTimeline();
             }
             else
             {
                 // Sync path: rules only, instant
-                _lastReport = engine.Analyze(session);
+                _lastReport = _analysisEngine.Analyze(session);
                 _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings.";
+                PopulateSummary();
+                PopulateFindings();
+                PopulateRecommendations();
+                PopulateTimeline();
             }
 
             _statusLabel.style.color = new Color(0.5f, 0.8f, 1f);
@@ -464,10 +764,36 @@ namespace DrWario.Editor
 
             // Auto-save to history
             ReportHistory.Save(_lastReport);
+        }
 
-            PopulateSummary();
-            PopulateFindings();
-            PopulateRecommendations();
+        private void ShowStreamingIndicator(bool show)
+        {
+            if (_streamingIndicator == null)
+            {
+                _streamingIndicator = new Label("Streaming...");
+                _streamingIndicator.style.fontSize = 11;
+                _streamingIndicator.style.color = new Color(0.4f, 0.8f, 0.9f);
+                _streamingIndicator.style.unityFontStyleAndWeight = FontStyle.Italic;
+                _streamingIndicator.style.marginBottom = 4;
+            }
+
+            if (show)
+            {
+                if (_streamingIndicator.parent == null)
+                    _findingsContainer.Insert(0, _streamingIndicator);
+                _streamingIndicator.style.display = DisplayStyle.Flex;
+            }
+            else
+            {
+                _streamingIndicator.style.display = DisplayStyle.None;
+            }
+        }
+
+        private void OnStreamingFinding(DiagnosticFinding finding)
+        {
+            // Add the finding card to the UI progressively
+            var card = CreateFindingCard(finding);
+            _findingsContainer.Add(card);
         }
 
         private void OnExportJson()
@@ -489,6 +815,26 @@ namespace DrWario.Editor
             {
                 System.IO.File.WriteAllText(path, _lastReport.ExportText());
                 Debug.Log($"[DrWario] Report exported to {path}");
+            }
+        }
+
+        private void OnExportHtml()
+        {
+            if (_lastReport == null) { EditorUtility.DisplayDialog("DrWario", "Run analysis first.", "OK"); return; }
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || session.FrameCount == 0)
+            {
+                EditorUtility.DisplayDialog("DrWario", "No active profiling session. HTML export requires session data.", "OK");
+                return;
+            }
+            var path = EditorUtility.SaveFilePanel("Export DrWario HTML Report", "", "drwario-report", "html");
+            if (!string.IsNullOrEmpty(path))
+            {
+                var html = HtmlReportBuilder.Build(_lastReport, session);
+                System.IO.File.WriteAllText(path, html);
+                Debug.Log($"[DrWario] HTML report exported to {path}");
+                _statusLabel.text = $"HTML report exported to {path}";
+                _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
             }
         }
 
@@ -624,11 +970,113 @@ namespace DrWario.Editor
 
                 _categoryContainer.Add(card);
             }
+
+            // Charts
+            AddCharts();
+        }
+
+        private void AddCharts()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || session.FrameCount == 0) return;
+
+            var frames = session.GetFrames();
+            var parent = _categoryContainer.parent;
+
+            // Remove old charts container if re-populating
+            var oldCharts = parent.Q<VisualElement>("charts-container");
+            if (oldCharts != null) parent.Remove(oldCharts);
+
+            var chartsContainer = new VisualElement();
+            chartsContainer.name = "charts-container";
+            chartsContainer.style.marginTop = 8;
+            parent.Add(chartsContainer);
+
+            var chartsTitle = new Label("Performance Charts");
+            chartsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+            chartsTitle.style.fontSize = 13;
+            chartsTitle.style.marginBottom = 6;
+            chartsContainer.Add(chartsTitle);
+
+            // Memory Trajectory Line Chart
+            var memChart = new LineChart();
+            memChart.style.height = 120;
+            memChart.style.marginBottom = 8;
+
+            int step = Math.Max(1, frames.Length / 12);
+            float startTime = frames[0].Timestamp;
+            var memValues = new List<float>();
+            var memTimes = new List<float>();
+            for (int i = 0; i < frames.Length; i += step)
+            {
+                memValues.Add(frames[i].TotalHeapBytes / (1024f * 1024f));
+                memTimes.Add(frames[i].Timestamp - startTime);
+            }
+            memChart.SetData(memValues.ToArray(), memTimes.ToArray(), "Heap (MB)", new Color(0.3f, 0.7f, 1f));
+
+            chartsContainer.Add(CreateSectionLabel("Memory Trajectory"));
+            chartsContainer.Add(memChart);
+
+            // Frame Time Distribution Histogram
+            var histogram = new Histogram();
+            histogram.style.height = 120;
+            histogram.style.marginBottom = 8;
+            var cpuTimes = new float[frames.Length];
+            for (int i = 0; i < frames.Length; i++) cpuTimes[i] = frames[i].CpuFrameTimeMs;
+            histogram.SetData(cpuTimes, 20);
+
+            chartsContainer.Add(CreateSectionLabel("Frame Time Distribution (ms)"));
+            chartsContainer.Add(histogram);
+
+            // GC Allocation Bar Chart
+            bool hasGc = frames.Any(f => f.GcAllocBytes > 0);
+            if (hasGc)
+            {
+                var gcChart = new BarChart();
+                gcChart.style.height = 100;
+                gcChart.style.marginBottom = 8;
+                gcChart.HighlightThreshold = 1024;
+
+                // Downsample GC data to ~100 bars max
+                int gcStep = Math.Max(1, frames.Length / 100);
+                var gcValues = new float[frames.Length / gcStep + 1];
+                for (int i = 0, j = 0; i < frames.Length && j < gcValues.Length; i += gcStep, j++)
+                    gcValues[j] = frames[i].GcAllocBytes;
+                gcChart.SetData(gcValues, null, new Color(0.9f, 0.6f, 0.2f));
+
+                chartsContainer.Add(CreateSectionLabel("GC Allocations (bytes/frame)"));
+                chartsContainer.Add(gcChart);
+            }
+
+            // CPU vs GPU Comparison Bar Chart
+            float avgCpuTime = frames.Average(f => f.CpuFrameTimeMs);
+            float avgGpuTime = frames.Where(f => f.GpuFrameTimeMs > 0).Select(f => f.GpuFrameTimeMs).DefaultIfEmpty(0).Average();
+            if (avgGpuTime > 0)
+            {
+                var cpuSorted = frames.Select(f => f.CpuFrameTimeMs).OrderBy(t => t).ToArray();
+                var gpuSorted = frames.Where(f => f.GpuFrameTimeMs > 0).Select(f => f.GpuFrameTimeMs).OrderBy(t => t).ToArray();
+
+                var cpuGpuChart = new BarChart();
+                cpuGpuChart.style.height = 100;
+                cpuGpuChart.style.marginBottom = 8;
+                float cpuP95 = cpuSorted[(int)(cpuSorted.Length * 0.95f)];
+                float gpuP95 = gpuSorted.Length > 0 ? gpuSorted[(int)(gpuSorted.Length * 0.95f)] : 0;
+
+                cpuGpuChart.SetGroupedData(
+                    new[] { new[] { avgCpuTime, cpuP95 }, new[] { avgGpuTime, gpuP95 } },
+                    new[] { "CPU", "GPU" },
+                    new[] { new Color(0.4f, 0.7f, 1f), new Color(0.4f, 0.9f, 0.4f) }
+                );
+
+                chartsContainer.Add(CreateSectionLabel("CPU vs GPU (Avg, P95)"));
+                chartsContainer.Add(cpuGpuChart);
+            }
         }
 
         private void PopulateFindings()
         {
             _findingsContainer.Clear();
+            _expandedCards.Clear();
 
             if (_lastReport.Findings.Count == 0)
             {
@@ -651,48 +1099,427 @@ namespace DrWario.Editor
 
             foreach (var f in _lastReport.Findings.OrderByDescending(f => f.Severity))
             {
-                var card = new VisualElement();
-                card.style.backgroundColor = new StyleColor(new Color(0.2f, 0.2f, 0.2f));
-                card.style.marginBottom = 8;
-                card.style.paddingTop = 8;
-                card.style.paddingBottom = 8;
-                card.style.paddingLeft = 10;
-                card.style.paddingRight = 10;
-                card.style.borderLeftWidth = 3;
-                card.style.borderLeftColor = SeverityColor(f.Severity);
-
-                // Header row
-                var headerRow = new VisualElement();
-                headerRow.style.flexDirection = FlexDirection.Row;
-
-                var severityBadge = new Label(f.Severity.ToString().ToUpper());
-                severityBadge.style.fontSize = 9;
-                severityBadge.style.color = SeverityColor(f.Severity);
-                severityBadge.style.unityFontStyleAndWeight = FontStyle.Bold;
-                severityBadge.style.width = 60;
-                headerRow.Add(severityBadge);
-
-                var titleLabel = new Label(f.Title);
-                titleLabel.style.flexGrow = 1;
-                titleLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-                headerRow.Add(titleLabel);
-
-                var catBadge = new Label($"[{f.Category}]");
-                catBadge.style.fontSize = 10;
-                catBadge.style.color = new Color(0.5f, 0.5f, 0.5f);
-                headerRow.Add(catBadge);
-
-                card.Add(headerRow);
-
-                var descLabel = new Label(f.Description);
-                descLabel.style.whiteSpace = WhiteSpace.Normal;
-                descLabel.style.marginTop = 4;
-                descLabel.style.fontSize = 11;
-                descLabel.style.color = new Color(0.75f, 0.75f, 0.75f);
-                card.Add(descLabel);
-
+                var card = CreateFindingCard(f);
                 _findingsContainer.Add(card);
             }
+
+            // Data tables section
+            AddDataTables();
+        }
+
+        private VisualElement CreateFindingCard(DiagnosticFinding f)
+        {
+            var card = new VisualElement();
+            card.style.backgroundColor = new StyleColor(new Color(0.2f, 0.2f, 0.2f));
+            card.style.marginBottom = 8;
+            card.style.paddingTop = 8;
+            card.style.paddingBottom = 8;
+            card.style.paddingLeft = 10;
+            card.style.paddingRight = 10;
+            card.style.borderLeftWidth = 3;
+            card.style.borderLeftColor = SeverityColor(f.Severity);
+
+            // Header row (always visible, clickable to expand/collapse)
+            var headerRow = new VisualElement();
+            headerRow.style.flexDirection = FlexDirection.Row;
+
+            var expandArrow = new Label(">");
+            expandArrow.style.fontSize = 10;
+            expandArrow.style.width = 14;
+            expandArrow.style.color = new Color(0.6f, 0.6f, 0.6f);
+            expandArrow.style.unityFontStyleAndWeight = FontStyle.Bold;
+            headerRow.Add(expandArrow);
+
+            var severityBadge = new Label(f.Severity.ToString().ToUpper());
+            severityBadge.style.fontSize = 9;
+            severityBadge.style.color = SeverityColor(f.Severity);
+            severityBadge.style.unityFontStyleAndWeight = FontStyle.Bold;
+            severityBadge.style.width = 60;
+            headerRow.Add(severityBadge);
+
+            var titleLabel = new Label(f.Title);
+            titleLabel.style.flexGrow = 1;
+            titleLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            headerRow.Add(titleLabel);
+
+            var catBadge = new Label($"[{f.Category}]");
+            catBadge.style.fontSize = 10;
+            catBadge.style.color = new Color(0.5f, 0.5f, 0.5f);
+            headerRow.Add(catBadge);
+
+            card.Add(headerRow);
+
+            var descLabel = new Label(f.Description);
+            descLabel.style.whiteSpace = WhiteSpace.Normal;
+            descLabel.style.marginTop = 4;
+            descLabel.style.fontSize = 11;
+            descLabel.style.color = new Color(0.75f, 0.75f, 0.75f);
+            card.Add(descLabel);
+
+            // Clickable source references
+            AddSourceReferences(card, f);
+
+            // Expandable detail section (hidden by default)
+            var detailSection = new VisualElement();
+            detailSection.name = "finding-detail";
+            detailSection.style.display = DisplayStyle.None;
+            detailSection.style.marginTop = 6;
+            detailSection.style.paddingTop = 6;
+            detailSection.style.borderTopWidth = 1;
+            detailSection.style.borderTopColor = new Color(0.3f, 0.3f, 0.3f);
+
+            // Affected frames list
+            if (f.AffectedFrames != null && f.AffectedFrames.Length > 0)
+            {
+                var framesHeader = new Label("Affected Frames:");
+                framesHeader.style.fontSize = 10;
+                framesHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+                framesHeader.style.color = new Color(0.7f, 0.7f, 0.7f);
+                framesHeader.style.marginBottom = 2;
+                detailSection.Add(framesHeader);
+
+                int displayCount = System.Math.Min(f.AffectedFrames.Length, 20);
+                var frameIndices = new System.Text.StringBuilder();
+                for (int i = 0; i < displayCount; i++)
+                {
+                    if (i > 0) frameIndices.Append(", ");
+                    frameIndices.Append(f.AffectedFrames[i]);
+                }
+                if (f.AffectedFrames.Length > 20)
+                    frameIndices.Append($" ... (+{f.AffectedFrames.Length - 20} more)");
+
+                var framesLabel = new Label(frameIndices.ToString());
+                framesLabel.style.whiteSpace = WhiteSpace.Normal;
+                framesLabel.style.fontSize = 10;
+                framesLabel.style.color = new Color(0.6f, 0.6f, 0.6f);
+                framesLabel.style.marginBottom = 4;
+                detailSection.Add(framesLabel);
+            }
+
+            // "Show in Profiler" link for frame-specific findings
+            if (f.FrameIndex >= 0)
+            {
+                int frameIdx = f.FrameIndex;
+                var profilerLink = new Label("Show in Profiler");
+                profilerLink.style.color = new Color(0.4f, 0.7f, 1f);
+                profilerLink.style.fontSize = 10;
+                profilerLink.style.unityFontStyleAndWeight = FontStyle.Bold;
+                profilerLink.style.marginBottom = 4;
+                profilerLink.tooltip = $"Navigate Unity Profiler to frame {frameIdx}";
+                profilerLink.AddManipulator(new Clickable(() =>
+                {
+                    ProfilerBridgeEditor.NavigateToFrame(frameIdx);
+                }));
+                detailSection.Add(profilerLink);
+            }
+
+            // Related findings from same category
+            if (_lastReport != null)
+            {
+                var related = _lastReport.Findings
+                    .Where(other => other.Category == f.Category && other.Title != f.Title)
+                    .Take(5)
+                    .ToList();
+
+                if (related.Count > 0)
+                {
+                    var relatedHeader = new Label("Related Findings:");
+                    relatedHeader.style.fontSize = 10;
+                    relatedHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    relatedHeader.style.color = new Color(0.7f, 0.7f, 0.7f);
+                    relatedHeader.style.marginTop = 4;
+                    relatedHeader.style.marginBottom = 2;
+                    detailSection.Add(relatedHeader);
+
+                    foreach (var rel in related)
+                    {
+                        var relLabel = new Label($"  {SeverityIcon(rel.Severity)} {rel.Title}");
+                        relLabel.style.fontSize = 10;
+                        relLabel.style.color = SeverityColor(rel.Severity);
+                        detailSection.Add(relLabel);
+                    }
+                }
+            }
+
+            card.Add(detailSection);
+
+            // Click handler for expand/collapse
+            var capturedCard = card;
+            var capturedDetail = detailSection;
+            var capturedArrow = expandArrow;
+            headerRow.AddManipulator(new Clickable(() =>
+            {
+                bool isExpanded = _expandedCards.Contains(capturedCard);
+                if (isExpanded)
+                {
+                    _expandedCards.Remove(capturedCard);
+                    capturedDetail.style.display = DisplayStyle.None;
+                    capturedArrow.text = ">";
+                }
+                else
+                {
+                    _expandedCards.Add(capturedCard);
+                    capturedDetail.style.display = DisplayStyle.Flex;
+                    capturedArrow.text = "v";
+                }
+            }));
+
+            return card;
+        }
+
+        private void AddDataTables()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null) return;
+
+            var frames = session.GetFrames();
+
+            // Section header
+            var tablesHeader = new Label("Data Tables");
+            tablesHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+            tablesHeader.style.fontSize = 14;
+            tablesHeader.style.marginTop = 16;
+            tablesHeader.style.marginBottom = 8;
+            _findingsContainer.Add(tablesHeader);
+
+            // Slowest Frames table
+            if (frames.Length > 0)
+            {
+                _findingsContainer.Add(CreateSectionLabel("Slowest Frames"));
+                var slowFrames = new List<FrameSample>(frames);
+                slowFrames.Sort((a, b) => b.CpuFrameTimeMs.CompareTo(a.CpuFrameTimeMs));
+                if (slowFrames.Count > 50) slowFrames.RemoveRange(50, slowFrames.Count - 50);
+
+                var table = DataTableBuilder.Create(
+                    new[]
+                    {
+                        new DataTableBuilder.ColumnDef { Title = "Frame#", Width = 60, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "CPU (ms)", Width = 80, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "GPU (ms)", Width = 80, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Draw Calls", Width = 80, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "GC (bytes)", Width = 80, Sortable = true },
+                    },
+                    slowFrames,
+                    (element, row, col) =>
+                    {
+                        var label = element as Label;
+                        if (label == null || row >= slowFrames.Count) return;
+                        var f = slowFrames[row];
+                        label.text = col switch
+                        {
+                            0 => System.Array.IndexOf(frames, f).ToString(),
+                            1 => f.CpuFrameTimeMs.ToString("F1"),
+                            2 => f.GpuFrameTimeMs.ToString("F1"),
+                            3 => f.DrawCalls.ToString(),
+                            4 => f.GcAllocBytes.ToString(),
+                            _ => ""
+                        };
+                    },
+                    (colIndex, asc) =>
+                    {
+                        var sorted = new List<FrameSample>(slowFrames);
+                        sorted.Sort((a, b) =>
+                        {
+                            float va = colIndex switch { 1 => a.CpuFrameTimeMs, 2 => a.GpuFrameTimeMs, 3 => a.DrawCalls, 4 => a.GcAllocBytes, _ => 0 };
+                            float vb = colIndex switch { 1 => b.CpuFrameTimeMs, 2 => b.GpuFrameTimeMs, 3 => b.DrawCalls, 4 => b.GcAllocBytes, _ => 0 };
+                            return asc ? va.CompareTo(vb) : vb.CompareTo(va);
+                        });
+                        return sorted;
+                    },
+                    180);
+                _findingsContainer.Add(table);
+            }
+
+            // GC Allocation Frames table
+            if (frames.Length > 0)
+            {
+                var gcFrames = new List<FrameSample>(frames.Where(f => f.GcAllocBytes > 0));
+                gcFrames.Sort((a, b) => b.GcAllocBytes.CompareTo(a.GcAllocBytes));
+                if (gcFrames.Count > 50) gcFrames.RemoveRange(50, gcFrames.Count - 50);
+
+                if (gcFrames.Count > 0)
+                {
+                    _findingsContainer.Add(CreateSectionLabel("Top GC Allocation Frames"));
+                    var gcTable = DataTableBuilder.Create(
+                        new[]
+                        {
+                            new DataTableBuilder.ColumnDef { Title = "Frame#", Width = 60, Sortable = true },
+                            new DataTableBuilder.ColumnDef { Title = "GC Bytes", Width = 90, Sortable = true },
+                            new DataTableBuilder.ColumnDef { Title = "GC Count", Width = 80, Sortable = true },
+                            new DataTableBuilder.ColumnDef { Title = "CPU (ms)", Width = 80, Sortable = true },
+                        },
+                        gcFrames,
+                        (element, row, col) =>
+                        {
+                            var label = element as Label;
+                            if (label == null || row >= gcFrames.Count) return;
+                            var f = gcFrames[row];
+                            label.text = col switch
+                            {
+                                0 => System.Array.IndexOf(frames, f).ToString(),
+                                1 => f.GcAllocBytes.ToString(),
+                                2 => f.GcAllocCount.ToString(),
+                                3 => f.CpuFrameTimeMs.ToString("F1"),
+                                _ => ""
+                            };
+                        },
+                        (colIndex, asc) =>
+                        {
+                            var sorted = new List<FrameSample>(gcFrames);
+                            sorted.Sort((a, b) =>
+                            {
+                                float va = colIndex switch { 1 => a.GcAllocBytes, 2 => a.GcAllocCount, 3 => a.CpuFrameTimeMs, _ => 0 };
+                                float vb = colIndex switch { 1 => b.GcAllocBytes, 2 => b.GcAllocCount, 3 => b.CpuFrameTimeMs, _ => 0 };
+                                return asc ? va.CompareTo(vb) : vb.CompareTo(va);
+                            });
+                            return sorted;
+                        },
+                        160);
+                    _findingsContainer.Add(gcTable);
+                }
+            }
+
+            // Asset Load Times table
+            if (session.AssetLoads.Count > 0)
+            {
+                _findingsContainer.Add(CreateSectionLabel("Asset Load Times"));
+                var assetLoads = new List<AssetLoadTiming>(session.AssetLoads);
+                assetLoads.Sort((a, b) => b.DurationMs.CompareTo(a.DurationMs));
+
+                var assetTable = DataTableBuilder.Create(
+                    new[]
+                    {
+                        new DataTableBuilder.ColumnDef { Title = "Asset Key", Width = 200, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Duration (ms)", Width = 100, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Size (bytes)", Width = 100, Sortable = true },
+                    },
+                    assetLoads,
+                    (element, row, col) =>
+                    {
+                        var label = element as Label;
+                        if (label == null || row >= assetLoads.Count) return;
+                        var a = assetLoads[row];
+                        label.text = col switch
+                        {
+                            0 => a.AssetKey ?? "",
+                            1 => a.DurationMs.ToString(),
+                            2 => a.SizeBytes.ToString(),
+                            _ => ""
+                        };
+                    },
+                    (colIndex, asc) =>
+                    {
+                        var sorted = new List<AssetLoadTiming>(assetLoads);
+                        sorted.Sort((a, b) =>
+                        {
+                            long va = colIndex switch { 1 => a.DurationMs, 2 => a.SizeBytes, _ => 0 };
+                            long vb = colIndex switch { 1 => b.DurationMs, 2 => b.SizeBytes, _ => 0 };
+                            return asc ? va.CompareTo(vb) : vb.CompareTo(va);
+                        });
+                        return sorted;
+                    },
+                    140);
+                _findingsContainer.Add(assetTable);
+            }
+
+            // Boot Stages table
+            if (session.BootStages.Count > 0)
+            {
+                _findingsContainer.Add(CreateSectionLabel("Boot Stages"));
+                var stages = new List<BootStageTiming>(session.BootStages);
+
+                var bootTable = DataTableBuilder.Create(
+                    new[]
+                    {
+                        new DataTableBuilder.ColumnDef { Title = "Stage Name", Width = 180, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Duration (ms)", Width = 100, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Status", Width = 80, Sortable = false },
+                    },
+                    stages,
+                    (element, row, col) =>
+                    {
+                        var label = element as Label;
+                        if (label == null || row >= stages.Count) return;
+                        var s = stages[row];
+                        label.text = col switch
+                        {
+                            0 => s.StageName ?? "",
+                            1 => s.DurationMs.ToString(),
+                            2 => s.Success ? "OK" : "FAILED",
+                            _ => ""
+                        };
+                        if (col == 2)
+                            label.style.color = s.Success ? new Color(0.4f, 0.8f, 0.4f) : new Color(0.9f, 0.25f, 0.25f);
+                    },
+                    (colIndex, asc) =>
+                    {
+                        var sorted = new List<BootStageTiming>(stages);
+                        if (colIndex == 1)
+                            sorted.Sort((a, b) => asc ? a.DurationMs.CompareTo(b.DurationMs) : b.DurationMs.CompareTo(a.DurationMs));
+                        return sorted;
+                    },
+                    120);
+                _findingsContainer.Add(bootTable);
+            }
+
+            // Network Events table
+            if (session.NetworkEvents.Count > 0)
+            {
+                _findingsContainer.Add(CreateSectionLabel("Network Events"));
+                var events = new List<NetworkEvent>(session.NetworkEvents);
+
+                var netTable = DataTableBuilder.Create(
+                    new[]
+                    {
+                        new DataTableBuilder.ColumnDef { Title = "Timestamp", Width = 80, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Type", Width = 80, Sortable = false },
+                        new DataTableBuilder.ColumnDef { Title = "Bytes", Width = 80, Sortable = true },
+                        new DataTableBuilder.ColumnDef { Title = "Latency (ms)", Width = 90, Sortable = true },
+                    },
+                    events,
+                    (element, row, col) =>
+                    {
+                        var label = element as Label;
+                        if (label == null || row >= events.Count) return;
+                        var e = events[row];
+                        label.text = col switch
+                        {
+                            0 => e.Timestamp.ToString("F2"),
+                            1 => e.Type.ToString(),
+                            2 => e.Bytes.ToString(),
+                            3 => e.LatencyMs.ToString("F1"),
+                            _ => ""
+                        };
+                    },
+                    (colIndex, asc) =>
+                    {
+                        var sorted = new List<NetworkEvent>(events);
+                        sorted.Sort((a, b) =>
+                        {
+                            float va = colIndex switch { 0 => a.Timestamp, 2 => a.Bytes, 3 => a.LatencyMs, _ => 0 };
+                            float vb = colIndex switch { 0 => b.Timestamp, 2 => b.Bytes, 3 => b.LatencyMs, _ => 0 };
+                            return asc ? va.CompareTo(vb) : vb.CompareTo(va);
+                        });
+                        return sorted;
+                    },
+                    140);
+                _findingsContainer.Add(netTable);
+            }
+        }
+
+        private Label CreateSectionLabel(string text)
+        {
+            return new Label(text)
+            {
+                style =
+                {
+                    unityFontStyleAndWeight = FontStyle.Bold,
+                    fontSize = 12,
+                    marginTop = 12,
+                    marginBottom = 4,
+                    color = new Color(0.8f, 0.8f, 0.8f)
+                }
+            };
         }
 
         private void PopulateRecommendations()
@@ -1056,6 +1883,8 @@ namespace DrWario.Editor
         private void RefreshHistory()
         {
             _historyContainer.Clear();
+            _selectedCompareReport = null;
+            _selectedCompareLabel = null;
 
             var toolbar = new VisualElement();
             toolbar.style.flexDirection = FlexDirection.Row;
@@ -1084,6 +1913,17 @@ namespace DrWario.Editor
                 _historyContainer.Add(new Label("No saved reports yet. Run an analysis to create one.")
                     { style = { color = new Color(0.6f, 0.6f, 0.6f), marginTop = 10 } });
                 return;
+            }
+
+            // Instruction label for comparison
+            if (reports.Count >= 2)
+            {
+                var compareHint = new Label("Click \"Compare\" on a report to select it as the baseline, then click \"Compare\" on another report.");
+                compareHint.style.fontSize = 10;
+                compareHint.style.color = new Color(0.5f, 0.5f, 0.5f);
+                compareHint.style.marginBottom = 6;
+                compareHint.name = "compare-hint";
+                _historyContainer.Add(compareHint);
             }
 
             foreach (var r in reports)
@@ -1121,7 +1961,20 @@ namespace DrWario.Editor
 
                 card.Add(infoCol);
 
+                // Compare button
                 var capturedPath = r.FilePath;
+                var capturedLabel = r.GeneratedAt ?? r.FileName;
+
+                if (reports.Count >= 2)
+                {
+                    var compareBtn = new Button(() => OnCompareClicked(capturedPath, capturedLabel)) { text = "Compare" };
+                    compareBtn.style.width = 60;
+                    compareBtn.style.height = 24;
+                    compareBtn.style.marginRight = 4;
+                    compareBtn.style.fontSize = 10;
+                    card.Add(compareBtn);
+                }
+
                 var deleteBtn = new Button(() =>
                 {
                     ReportHistory.DeleteReport(capturedPath);
@@ -1133,6 +1986,356 @@ namespace DrWario.Editor
 
                 _historyContainer.Add(card);
             }
+        }
+
+        private void OnCompareClicked(string filePath, string label)
+        {
+            var report = ReportHistory.LoadReport(filePath);
+            if (report == null)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Failed to load report for comparison.", "OK");
+                return;
+            }
+
+            if (_selectedCompareReport == null)
+            {
+                // First selection (Report A - the baseline/older report)
+                _selectedCompareReport = report;
+                _selectedCompareLabel = label;
+
+                var hint = _historyContainer.Q<Label>("compare-hint");
+                if (hint != null)
+                {
+                    hint.text = $"Baseline selected: {label} (Grade {report.OverallGrade}). Now click \"Compare\" on another report.";
+                    hint.style.color = new Color(0.4f, 0.8f, 0.4f);
+                }
+            }
+            else
+            {
+                // Second selection (Report B - the newer report to compare against)
+                var comparison = new ReportComparison(_selectedCompareReport, report);
+                ShowComparisonView(comparison, _selectedCompareLabel, label);
+            }
+        }
+
+        private void ShowComparisonView(ReportComparison comparison, string labelA, string labelB)
+        {
+            _historyContainer.Clear();
+
+            // Back button
+            var backBtn = new Button(RefreshHistory) { text = "Back to History" };
+            backBtn.style.height = 28;
+            backBtn.style.marginBottom = 12;
+            backBtn.style.backgroundColor = new StyleColor(new Color(0.25f, 0.25f, 0.3f));
+            _historyContainer.Add(backBtn);
+
+            // Platform/version mismatch warning
+            bool platformMismatch = comparison.ReportA.Session.Platform != comparison.ReportB.Session.Platform;
+            bool versionMismatch = comparison.ReportA.Session.UnityVersion != comparison.ReportB.Session.UnityVersion;
+            if (platformMismatch || versionMismatch)
+            {
+                var warnBanner = new Label(
+                    platformMismatch && versionMismatch
+                        ? $"Warning: Reports are from different platforms ({comparison.ReportA.Session.Platform} vs {comparison.ReportB.Session.Platform}) and Unity versions ({comparison.ReportA.Session.UnityVersion} vs {comparison.ReportB.Session.UnityVersion}). Comparison may not be meaningful."
+                        : platformMismatch
+                            ? $"Warning: Reports are from different platforms ({comparison.ReportA.Session.Platform} vs {comparison.ReportB.Session.Platform}). Comparison may not be meaningful."
+                            : $"Warning: Reports are from different Unity versions ({comparison.ReportA.Session.UnityVersion} vs {comparison.ReportB.Session.UnityVersion}). Results may differ."
+                );
+                warnBanner.style.backgroundColor = new StyleColor(new Color(0.5f, 0.4f, 0.1f));
+                warnBanner.style.color = new Color(1f, 0.9f, 0.5f);
+                warnBanner.style.paddingTop = 6;
+                warnBanner.style.paddingBottom = 6;
+                warnBanner.style.paddingLeft = 10;
+                warnBanner.style.paddingRight = 10;
+                warnBanner.style.marginBottom = 12;
+                warnBanner.style.fontSize = 11;
+                warnBanner.style.whiteSpace = WhiteSpace.Normal;
+                _historyContainer.Add(warnBanner);
+            }
+
+            // Header
+            var compHeader = new Label("Report Comparison");
+            compHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+            compHeader.style.fontSize = 16;
+            compHeader.style.marginBottom = 4;
+            _historyContainer.Add(compHeader);
+
+            var subHeader = new Label($"{labelA}  vs  {labelB}");
+            subHeader.style.fontSize = 11;
+            subHeader.style.color = new Color(0.6f, 0.6f, 0.6f);
+            subHeader.style.marginBottom = 12;
+            _historyContainer.Add(subHeader);
+
+            // Overall grade delta
+            var overallCard = new VisualElement();
+            overallCard.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.22f));
+            overallCard.style.paddingTop = 12;
+            overallCard.style.paddingBottom = 12;
+            overallCard.style.paddingLeft = 16;
+            overallCard.style.paddingRight = 16;
+            overallCard.style.marginBottom = 12;
+            overallCard.style.borderLeftWidth = 4;
+
+            float scoreDelta = comparison.OverallGradeDelta;
+            bool improved = scoreDelta > 0;
+            overallCard.style.borderLeftColor = improved
+                ? new Color(0.3f, 0.85f, 0.4f)
+                : (scoreDelta < 0 ? new Color(0.9f, 0.25f, 0.25f) : new Color(0.5f, 0.5f, 0.5f));
+
+            var gradeRow = new VisualElement();
+            gradeRow.style.flexDirection = FlexDirection.Row;
+            gradeRow.style.alignItems = Align.Center;
+
+            var gradeALabel = new Label(comparison.ReportA.OverallGrade.ToString());
+            gradeALabel.style.fontSize = 48;
+            gradeALabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            gradeALabel.style.color = GradeColor(comparison.ReportA.OverallGrade);
+            gradeRow.Add(gradeALabel);
+
+            var arrowLabel = new Label("  ->  ");
+            arrowLabel.style.fontSize = 24;
+            arrowLabel.style.color = new Color(0.5f, 0.5f, 0.5f);
+            gradeRow.Add(arrowLabel);
+
+            var gradeBLabel = new Label(comparison.ReportB.OverallGrade.ToString());
+            gradeBLabel.style.fontSize = 48;
+            gradeBLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            gradeBLabel.style.color = GradeColor(comparison.ReportB.OverallGrade);
+            gradeRow.Add(gradeBLabel);
+
+            string deltaSign = scoreDelta >= 0 ? "+" : "";
+            var overallDeltaLabel = new Label($"  ({deltaSign}{scoreDelta:F0})");
+            overallDeltaLabel.style.fontSize = 20;
+            overallDeltaLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            overallDeltaLabel.style.color = improved
+                ? new Color(0.3f, 0.85f, 0.4f)
+                : (scoreDelta < 0 ? new Color(0.9f, 0.25f, 0.25f) : new Color(0.5f, 0.5f, 0.5f));
+            gradeRow.Add(overallDeltaLabel);
+
+            overallCard.Add(gradeRow);
+
+            var scoreDetail = new Label($"Health Score: {comparison.ReportA.HealthScore:F0} -> {comparison.ReportB.HealthScore:F0}");
+            scoreDetail.style.fontSize = 11;
+            scoreDetail.style.color = new Color(0.6f, 0.6f, 0.6f);
+            scoreDetail.style.marginTop = 4;
+            overallCard.Add(scoreDetail);
+
+            _historyContainer.Add(overallCard);
+
+            // Per-category grade deltas
+            if (comparison.CategoryDeltas.Count > 0)
+            {
+                _historyContainer.Add(CreateSectionLabel("Category Grades"));
+
+                var catContainer = new VisualElement();
+                catContainer.style.flexDirection = FlexDirection.Row;
+                catContainer.style.flexWrap = Wrap.Wrap;
+                catContainer.style.marginBottom = 12;
+
+                foreach (var kvp in comparison.CategoryDeltas)
+                {
+                    var gd = kvp.Value;
+                    var catCard = new VisualElement();
+                    catCard.style.width = 130;
+                    catCard.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.18f));
+                    catCard.style.marginRight = 8;
+                    catCard.style.marginBottom = 8;
+                    catCard.style.paddingTop = 8;
+                    catCard.style.paddingBottom = 8;
+                    catCard.style.paddingLeft = 10;
+                    catCard.style.paddingRight = 10;
+                    catCard.style.borderLeftWidth = 3;
+
+                    bool catImproved = gd.ScoreDelta > 0;
+                    catCard.style.borderLeftColor = catImproved
+                        ? new Color(0.3f, 0.85f, 0.4f)
+                        : (gd.ScoreDelta < 0 ? new Color(0.9f, 0.25f, 0.25f) : new Color(0.5f, 0.5f, 0.5f));
+
+                    var catGradeRow = new VisualElement();
+                    catGradeRow.style.flexDirection = FlexDirection.Row;
+                    catGradeRow.style.alignItems = Align.Center;
+
+                    var catGradeA = new Label(gd.GradeA.ToString());
+                    catGradeA.style.fontSize = 20;
+                    catGradeA.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    catGradeA.style.color = GradeColor(gd.GradeA);
+                    catGradeRow.Add(catGradeA);
+
+                    var catArrow = new Label(" -> ");
+                    catArrow.style.fontSize = 12;
+                    catArrow.style.color = new Color(0.5f, 0.5f, 0.5f);
+                    catGradeRow.Add(catArrow);
+
+                    var catGradeB = new Label(gd.GradeB.ToString());
+                    catGradeB.style.fontSize = 20;
+                    catGradeB.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    catGradeB.style.color = GradeColor(gd.GradeB);
+                    catGradeRow.Add(catGradeB);
+
+                    catCard.Add(catGradeRow);
+
+                    var catName = new Label(gd.Category);
+                    catName.style.fontSize = 11;
+                    catName.style.color = new Color(0.7f, 0.7f, 0.7f);
+                    catName.style.marginTop = 2;
+                    catCard.Add(catName);
+
+                    catContainer.Add(catCard);
+                }
+
+                _historyContainer.Add(catContainer);
+            }
+
+            // Metric deltas
+            _historyContainer.Add(CreateSectionLabel("Metric Deltas"));
+
+            var metricsCard = new VisualElement();
+            metricsCard.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.22f));
+            metricsCard.style.paddingTop = 10;
+            metricsCard.style.paddingBottom = 10;
+            metricsCard.style.paddingLeft = 12;
+            metricsCard.style.paddingRight = 12;
+            metricsCard.style.marginBottom = 12;
+
+            var md = comparison.MetricDeltas;
+            AddMetricDeltaRow(metricsCard, "Avg CPU Time", comparison.ReportA.AvgCpuTimeMs, comparison.ReportB.AvgCpuTimeMs, md.AvgCpuTimeDelta, "ms", true);
+            AddMetricDeltaRow(metricsCard, "P95 CPU Time", comparison.ReportA.P95CpuTimeMs, comparison.ReportB.P95CpuTimeMs, md.P95CpuTimeDelta, "ms", true);
+            AddMetricDeltaRow(metricsCard, "GC Alloc Rate", comparison.ReportA.AvgGcAllocBytes, comparison.ReportB.AvgGcAllocBytes, md.GcRateDelta, "B/frame", true);
+            AddMetricDeltaRow(metricsCard, "Memory Slope", comparison.ReportA.MemorySlope, comparison.ReportB.MemorySlope, md.MemorySlopeDelta, "B/frame", true);
+            AddMetricDeltaRow(metricsCard, "Draw Calls", comparison.ReportA.AvgDrawCalls, comparison.ReportB.AvgDrawCalls, md.DrawCallsDelta, "", true);
+
+            _historyContainer.Add(metricsCard);
+
+            // Finding diffs
+            if (comparison.FindingDiffs.Count > 0)
+            {
+                int fixedCount = comparison.FindingDiffs.Count(d => d.Status == FindingDiffStatus.Fixed);
+                int newCount = comparison.FindingDiffs.Count(d => d.Status == FindingDiffStatus.New);
+                int persistsCount = comparison.FindingDiffs.Count(d => d.Status == FindingDiffStatus.Persists);
+
+                _historyContainer.Add(CreateSectionLabel($"Finding Changes ({fixedCount} fixed, {newCount} new, {persistsCount} persists)"));
+
+                // Fixed findings (green)
+                foreach (var diff in comparison.FindingDiffs.Where(d => d.Status == FindingDiffStatus.Fixed)
+                             .OrderByDescending(d => d.Finding.Severity))
+                {
+                    AddFindingDiffCard(diff, new Color(0.3f, 0.85f, 0.4f), "FIXED");
+                }
+
+                // New findings (red)
+                foreach (var diff in comparison.FindingDiffs.Where(d => d.Status == FindingDiffStatus.New)
+                             .OrderByDescending(d => d.Finding.Severity))
+                {
+                    AddFindingDiffCard(diff, new Color(0.9f, 0.25f, 0.25f), "NEW");
+                }
+
+                // Persisting findings (gray)
+                foreach (var diff in comparison.FindingDiffs.Where(d => d.Status == FindingDiffStatus.Persists)
+                             .OrderByDescending(d => d.Finding.Severity))
+                {
+                    AddFindingDiffCard(diff, new Color(0.5f, 0.5f, 0.5f), "PERSISTS");
+                }
+            }
+            else
+            {
+                _historyContainer.Add(new Label("No findings to compare.")
+                    { style = { color = new Color(0.6f, 0.6f, 0.6f), marginTop = 6 } });
+            }
+        }
+
+        private void AddMetricDeltaRow(VisualElement container, string metricName, float valueA, float valueB, float delta, string unit, bool lowerIsBetter)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.marginBottom = 4;
+            row.style.alignItems = Align.Center;
+
+            var nameLabel = new Label(metricName);
+            nameLabel.style.width = 120;
+            nameLabel.style.fontSize = 11;
+            nameLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
+            row.Add(nameLabel);
+
+            string valuesText = string.IsNullOrEmpty(unit)
+                ? $"{valueA:F1} -> {valueB:F1}"
+                : $"{valueA:F2} -> {valueB:F2} {unit}";
+            var valuesLabel = new Label(valuesText);
+            valuesLabel.style.flexGrow = 1;
+            valuesLabel.style.fontSize = 11;
+            valuesLabel.style.color = new Color(0.8f, 0.8f, 0.8f);
+            row.Add(valuesLabel);
+
+            string sign = delta >= 0 ? "+" : "";
+            bool isImprovement = lowerIsBetter ? delta < 0 : delta > 0;
+            bool isRegression = lowerIsBetter ? delta > 0 : delta < 0;
+
+            var deltaLbl = new Label($"{sign}{delta:F2}{(string.IsNullOrEmpty(unit) ? "" : " " + unit)}");
+            deltaLbl.style.width = 100;
+            deltaLbl.style.fontSize = 11;
+            deltaLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            deltaLbl.style.unityTextAlign = TextAnchor.MiddleRight;
+            deltaLbl.style.color = isImprovement
+                ? new Color(0.3f, 0.85f, 0.4f)
+                : (isRegression ? new Color(0.9f, 0.25f, 0.25f) : new Color(0.5f, 0.5f, 0.5f));
+            row.Add(deltaLbl);
+
+            container.Add(row);
+        }
+
+        private void AddFindingDiffCard(FindingDiff diff, Color statusColor, string statusText)
+        {
+            var card = new VisualElement();
+            card.style.backgroundColor = new StyleColor(new Color(0.2f, 0.2f, 0.2f));
+            card.style.marginBottom = 6;
+            card.style.paddingTop = 6;
+            card.style.paddingBottom = 6;
+            card.style.paddingLeft = 10;
+            card.style.paddingRight = 10;
+            card.style.borderLeftWidth = 3;
+            card.style.borderLeftColor = statusColor;
+
+            var headerRow = new VisualElement();
+            headerRow.style.flexDirection = FlexDirection.Row;
+            headerRow.style.alignItems = Align.Center;
+
+            var badge = new Label(statusText);
+            badge.style.fontSize = 9;
+            badge.style.color = statusColor;
+            badge.style.unityFontStyleAndWeight = FontStyle.Bold;
+            badge.style.width = 60;
+            headerRow.Add(badge);
+
+            var sevBadge = new Label(diff.Finding.Severity.ToString().ToUpper());
+            sevBadge.style.fontSize = 9;
+            sevBadge.style.color = SeverityColor(diff.Finding.Severity);
+            sevBadge.style.unityFontStyleAndWeight = FontStyle.Bold;
+            sevBadge.style.width = 55;
+            headerRow.Add(sevBadge);
+
+            var title = new Label(diff.Finding.Title);
+            title.style.flexGrow = 1;
+            title.style.fontSize = 11;
+            title.style.unityFontStyleAndWeight = FontStyle.Bold;
+            headerRow.Add(title);
+
+            var catLabel = new Label($"[{diff.Finding.Category}]");
+            catLabel.style.fontSize = 10;
+            catLabel.style.color = new Color(0.5f, 0.5f, 0.5f);
+            headerRow.Add(catLabel);
+
+            card.Add(headerRow);
+
+            if (!string.IsNullOrEmpty(diff.Finding.Description))
+            {
+                var desc = new Label(diff.Finding.Description);
+                desc.style.whiteSpace = WhiteSpace.Normal;
+                desc.style.marginTop = 3;
+                desc.style.fontSize = 10;
+                desc.style.color = new Color(0.65f, 0.65f, 0.65f);
+                card.Add(desc);
+            }
+
+            _historyContainer.Add(card);
         }
 
         // -- Sparkline --
@@ -1216,6 +2419,80 @@ namespace DrWario.Editor
             'D' => new Color(0.9f, 0.5f, 0.2f),
             _ => new Color(0.9f, 0.25f, 0.25f)
         };
+
+        /// <summary>
+        /// Adds clickable script/asset reference links to a finding card.
+        /// </summary>
+        private static void AddSourceReferences(VisualElement card, DiagnosticFinding f)
+        {
+            if (string.IsNullOrEmpty(f.ScriptPath) && string.IsNullOrEmpty(f.AssetPath))
+                return;
+
+            var refRow = new VisualElement();
+            refRow.style.flexDirection = FlexDirection.Row;
+            refRow.style.flexWrap = Wrap.Wrap;
+            refRow.style.marginTop = 4;
+
+            if (!string.IsNullOrEmpty(f.ScriptPath))
+            {
+                string scriptDisplay = f.ScriptLine > 0 ? $"{f.ScriptPath}:{f.ScriptLine}" : f.ScriptPath;
+                var scriptLink = new Label($"Script: {scriptDisplay}");
+                scriptLink.style.color = new Color(0.4f, 0.7f, 1f);
+                scriptLink.style.fontSize = 10;
+                scriptLink.style.marginRight = 12;
+                scriptLink.style.unityFontStyleAndWeight = FontStyle.Italic;
+                scriptLink.style.cursor = StyleKeyword.Auto; // indicate clickability
+
+                // Validate path exists before making clickable
+                string path = f.ScriptPath;
+                int line = f.ScriptLine;
+                var asset = AssetDatabase.LoadMainAssetAtPath(path);
+                if (asset != null)
+                {
+                    scriptLink.AddManipulator(new Clickable(() =>
+                    {
+                        AssetDatabase.OpenAsset(asset, line);
+                    }));
+                    scriptLink.tooltip = $"Click to open {path} at line {line}";
+                }
+                else
+                {
+                    scriptLink.style.color = new Color(0.5f, 0.5f, 0.5f);
+                    scriptLink.tooltip = "File not found";
+                }
+
+                refRow.Add(scriptLink);
+            }
+
+            if (!string.IsNullOrEmpty(f.AssetPath))
+            {
+                var assetLink = new Label($"Asset: {f.AssetPath}");
+                assetLink.style.color = new Color(0.4f, 0.7f, 1f);
+                assetLink.style.fontSize = 10;
+                assetLink.style.unityFontStyleAndWeight = FontStyle.Italic;
+
+                string assetPath = f.AssetPath;
+                var asset = AssetDatabase.LoadMainAssetAtPath(assetPath);
+                if (asset != null)
+                {
+                    assetLink.AddManipulator(new Clickable(() =>
+                    {
+                        EditorGUIUtility.PingObject(asset);
+                        Selection.activeObject = asset;
+                    }));
+                    assetLink.tooltip = $"Click to highlight {assetPath} in Project window";
+                }
+                else
+                {
+                    assetLink.style.color = new Color(0.5f, 0.5f, 0.5f);
+                    assetLink.tooltip = "Asset not found";
+                }
+
+                refRow.Add(assetLink);
+            }
+
+            card.Add(refRow);
+        }
 
         private static Color SeverityColor(Severity s) => s switch
         {

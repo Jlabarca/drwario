@@ -30,6 +30,8 @@ namespace DrWario.Editor
         private static long _sumDrawCalls;
         private static long _sumBatches;
         private static long _sumSetPass;
+        private static long _sumUICanvasRebuilds;
+        private static long _sumUILayoutRebuilds;
 
         static EditorBaselineCapture()
         {
@@ -65,6 +67,8 @@ namespace DrWario.Editor
             _sumDrawCalls = 0;
             _sumBatches = 0;
             _sumSetPass = 0;
+            _sumUICanvasRebuilds = 0;
+            _sumUILayoutRebuilds = 0;
             _capturing = true;
 
             EditorApplication.update += OnEditorUpdate;
@@ -101,6 +105,8 @@ namespace DrWario.Editor
             _sumDrawCalls += _bridge.DrawCalls;
             _sumBatches += _bridge.Batches;
             _sumSetPass += _bridge.SetPassCalls;
+            _sumUICanvasRebuilds += _bridge.UICanvasRebuilds;
+            _sumUILayoutRebuilds += _bridge.UILayoutRebuilds;
 
             _sampleCount++;
 
@@ -126,6 +132,8 @@ namespace DrWario.Editor
                 AvgDrawCalls = (int)(_sumDrawCalls / realSamples),
                 AvgBatches = (int)(_sumBatches / realSamples),
                 AvgSetPassCalls = (int)(_sumSetPass / realSamples),
+                AvgUICanvasRebuilds = (int)(_sumUICanvasRebuilds / realSamples),
+                AvgUILayoutRebuilds = (int)(_sumUILayoutRebuilds / realSamples),
                 SampleCount = realSamples,
                 IsValid = true
             };

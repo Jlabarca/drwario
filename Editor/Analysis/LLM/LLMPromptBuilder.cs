@@ -28,6 +28,9 @@ Each finding object must have these exact fields:
 - recommendation (string): actionable fix with specific code patterns
 - metric (number): the measured value
 - threshold (number): the reference threshold
+- scriptPath (string, optional): relative Unity asset path to the script causing the issue (e.g. ""Assets/Scripts/PlayerController.cs""). Include only when you can identify a specific script.
+- scriptLine (int, optional): line number in the script, 0 if unknown
+- assetPath (string, optional): relative Unity asset path to a related asset (e.g. ""Assets/Textures/LargeTexture.png""). Include only when you can identify a specific asset.
 
 Focus on:
 1. Correlations between metrics (e.g. GC spikes causing frame drops)
@@ -44,6 +47,15 @@ Use these to estimate actual game performance:
 - Memory totals: editor uses significant memory for metadata/caches — don't alarm on absolute values
 When findings have confidence=""Low"", flag them as ""may be editor overhead"" rather than definitive issues.
 Recommend the user verify critical findings in a development build.
+
+When scene census data is provided (sceneCensus), consider scene composition in your analysis:
+- Too many point/spot lights without baking → recommend light baking or reducing dynamic lights
+- Missing LOD groups on high-poly meshes → recommend adding LOD groups
+- Excessive particle systems → recommend pooling or reducing emission rates
+- Many rigidbodies without sleeping → recommend adjusting sleep thresholds
+- Canvas count → recommend combining canvases or using world-space canvases
+
+When profilerMarkers data is available, reference specific marker names in your findings rather than guessing which subsystem is expensive. Use the marker timing data to attribute frame budget usage.
 
 Return ONLY a JSON array of findings. No markdown, no preamble, no explanation outside the JSON.";
 
@@ -169,11 +181,73 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             // Asset loads
             AppendAssetLoads(sb, session);
 
+            // Profiler markers (subsystem timing)
+            AppendProfilerMarkers(sb, session);
+
+            // Extended subsystem counters
+            AppendExtendedCounters(sb, session);
+
+            // Scene census
+            AppendSceneCensus(sb, session);
+
             // Pre-analysis (rule-based findings)
             AppendPreAnalysis(sb, ruleFindings);
 
             sb.AppendLine("}");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Builds a standalone profiler markers section string for display or export.
+        /// Returns empty string if no marker data is available.
+        /// </summary>
+        public static string BuildProfilerMarkersSection(ProfilingSession session)
+        {
+            if (session?.ProfilerMarkers == null || session.ProfilerMarkers.Count == 0)
+                return string.Empty;
+
+            var sb = new StringBuilder();
+            sb.AppendLine();
+            sb.AppendLine("--- Profiler Markers (top subsystem timing) ---");
+            sb.Append("profilerMarkers: [");
+
+            for (int i = 0; i < session.ProfilerMarkers.Count; i++)
+            {
+                var m = session.ProfilerMarkers[i];
+                double avgIncMs = m.AvgInclusiveTimeNs / 1_000_000.0;
+                double avgExcMs = m.AvgExclusiveTimeNs / 1_000_000.0;
+                double maxIncMs = m.MaxInclusiveTimeNs / 1_000_000.0;
+
+                if (i > 0) sb.Append(",");
+                sb.AppendLine();
+                sb.Append($"  {{ \"name\": \"{EscapeJson(m.MarkerName)}\", \"avgInclusiveMs\": {avgIncMs:F1}, \"avgExclusiveMs\": {avgExcMs:F1}, \"maxInclusiveMs\": {maxIncMs:F1}, \"avgCallCount\": {m.AvgCallCount:F1} }}");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("]");
+            return sb.ToString();
+        }
+
+        private static void AppendProfilerMarkers(StringBuilder sb, ProfilingSession session)
+        {
+            if (session?.ProfilerMarkers == null || session.ProfilerMarkers.Count == 0)
+            {
+                sb.AppendLine("  \"profilerMarkers\": null,");
+                return;
+            }
+
+            sb.AppendLine("  \"profilerMarkers\": [");
+            for (int i = 0; i < session.ProfilerMarkers.Count; i++)
+            {
+                var m = session.ProfilerMarkers[i];
+                double avgIncMs = m.AvgInclusiveTimeNs / 1_000_000.0;
+                double avgExcMs = m.AvgExclusiveTimeNs / 1_000_000.0;
+                double maxIncMs = m.MaxInclusiveTimeNs / 1_000_000.0;
+                string comma = i < session.ProfilerMarkers.Count - 1 ? "," : "";
+
+                sb.AppendLine($"    {{ \"name\": \"{EscapeJson(m.MarkerName)}\", \"avgInclusiveMs\": {avgIncMs:F1}, \"avgExclusiveMs\": {avgExcMs:F1}, \"maxInclusiveMs\": {maxIncMs:F1}, \"avgCallCount\": {m.AvgCallCount:F1} }}{comma}");
+            }
+            sb.AppendLine("  ],");
         }
 
         private static void AppendEnvironment(StringBuilder sb, ProfilingSession session)
@@ -472,6 +546,101 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             }
             sb.AppendLine("    ]");
             sb.AppendLine("  }");
+        }
+
+        private static void AppendExtendedCounters(StringBuilder sb, ProfilingSession session)
+        {
+            var frames = session.GetFrames();
+            if (frames.Length == 0) return;
+
+            bool hasPhysics = frames.Any(f => f.PhysicsActiveBodies > 0 || f.PhysicsContacts > 0);
+            bool hasAudio = frames.Any(f => f.AudioVoiceCount > 0);
+            bool hasAnimation = frames.Any(f => f.AnimatorCount > 0);
+            bool hasUI = frames.Any(f => f.UICanvasRebuilds > 0 || f.UILayoutRebuilds > 0);
+
+            if (!hasPhysics && !hasAudio && !hasAnimation && !hasUI) return;
+
+            sb.AppendLine("  \"extendedCounters\": {");
+            bool needsComma = false;
+
+            if (hasPhysics)
+            {
+                if (needsComma) sb.AppendLine(",");
+                sb.Append("    \"physics\": { ");
+                sb.Append($"\"avgActiveBodies\": {frames.Average(f => f.PhysicsActiveBodies):F0}, ");
+                sb.Append($"\"avgKinematicBodies\": {frames.Average(f => f.PhysicsKinematicBodies):F0}, ");
+                sb.Append($"\"avgContacts\": {frames.Average(f => f.PhysicsContacts):F0}, ");
+                sb.Append($"\"maxContacts\": {frames.Max(f => f.PhysicsContacts)}");
+                sb.Append(" }");
+                needsComma = true;
+            }
+            if (hasAudio)
+            {
+                if (needsComma) sb.AppendLine(",");
+                sb.Append("    \"audio\": { ");
+                sb.Append($"\"avgVoices\": {frames.Average(f => f.AudioVoiceCount):F0}, ");
+                sb.Append($"\"maxVoices\": {frames.Max(f => f.AudioVoiceCount)}, ");
+                sb.Append($"\"avgDSPLoad\": {frames.Average(f => f.AudioDSPLoad):F1}");
+                sb.Append(" }");
+                needsComma = true;
+            }
+            if (hasAnimation)
+            {
+                if (needsComma) sb.AppendLine(",");
+                sb.Append("    \"animation\": { ");
+                sb.Append($"\"avgAnimators\": {frames.Average(f => f.AnimatorCount):F0}, ");
+                sb.Append($"\"maxAnimators\": {frames.Max(f => f.AnimatorCount)}");
+                sb.Append(" }");
+                needsComma = true;
+            }
+            if (hasUI)
+            {
+                if (needsComma) sb.AppendLine(",");
+                sb.Append("    \"ui\": { ");
+                sb.Append($"\"avgCanvasRebuilds\": {frames.Average(f => f.UICanvasRebuilds):F1}, ");
+                sb.Append($"\"maxCanvasRebuilds\": {frames.Max(f => f.UICanvasRebuilds)}, ");
+                sb.Append($"\"avgLayoutRebuilds\": {frames.Average(f => f.UILayoutRebuilds):F1}, ");
+                sb.Append($"\"maxLayoutRebuilds\": {frames.Max(f => f.UILayoutRebuilds)}");
+                sb.Append(" }");
+            }
+            sb.AppendLine();
+            sb.AppendLine("  },");
+        }
+
+        private static void AppendSceneCensus(StringBuilder sb, ProfilingSession session)
+        {
+            var census = session.SceneCensus;
+            if (!census.IsValid) return;
+
+            sb.AppendLine("  \"sceneCensus\": {");
+            sb.AppendLine($"    \"totalGameObjects\": {census.TotalGameObjects},");
+            sb.AppendLine($"    \"totalComponents\": {census.TotalComponents},");
+
+            if (census.ComponentDistribution != null && census.ComponentDistribution.Length > 0)
+            {
+                sb.AppendLine("    \"componentDistribution\": [");
+                for (int i = 0; i < census.ComponentDistribution.Length; i++)
+                {
+                    var c = census.ComponentDistribution[i];
+                    string comma = i < census.ComponentDistribution.Length - 1 ? "," : "";
+                    sb.AppendLine($"      {{ \"type\": \"{EscapeJson(c.TypeName)}\", \"count\": {c.Count} }}{comma}");
+                }
+                sb.AppendLine("    ],");
+            }
+
+            sb.AppendLine("    \"lights\": {");
+            sb.AppendLine($"      \"directional\": {census.DirectionalLights},");
+            sb.AppendLine($"      \"point\": {census.PointLights},");
+            sb.AppendLine($"      \"spot\": {census.SpotLights},");
+            sb.AppendLine($"      \"area\": {census.AreaLights}");
+            sb.AppendLine("    },");
+            sb.AppendLine($"    \"canvasCount\": {census.CanvasCount},");
+            sb.AppendLine($"    \"cameraCount\": {census.CameraCount},");
+            sb.AppendLine($"    \"particleSystemCount\": {census.ParticleSystemCount},");
+            sb.AppendLine($"    \"lodGroupCount\": {census.LODGroupCount},");
+            sb.AppendLine($"    \"rigidbodyCount\": {census.RigidbodyCount},");
+            sb.AppendLine($"    \"rigidbody2DCount\": {census.Rigidbody2DCount}");
+            sb.AppendLine("  },");
         }
 
         private static float Percentile(float[] sorted, float p)
