@@ -47,6 +47,9 @@ namespace DrWario.Editor.Analysis
                 AppendMemoryChart(sb, frames);
             }
 
+            // Synthesis (deterministic insights)
+            AppendSynthesis(sb, report);
+
             // Findings
             AppendFindings(sb, report);
 
@@ -158,6 +161,22 @@ svg.chart {
   background: #16213e;
   border-radius: 8px;
 }
+.synthesis { margin: 24px 0; }
+.executive-summary {
+  font-size: 15px;
+  color: #bcd;
+  background: #16213e;
+  border-left: 4px solid #4488cc;
+  padding: 16px;
+  border-radius: 4px;
+  line-height: 1.6;
+}
+.synthesis h3 { color: #bbb; margin-top: 20px; }
+.synthesis ol { padding-left: 24px; }
+.synthesis ol li { margin-bottom: 6px; color: #ccc; }
+.finding-card.critical { border-left-color: #F44336; }
+.finding-card.warning { border-left-color: #FFC107; }
+.finding-card.info { border-left-color: #2196F3; }
 .footer {
   text-align: center;
   color: #555;
@@ -216,6 +235,48 @@ svg.chart {
         private static void MRow(StringBuilder sb, string metric, string value)
         {
             sb.Append("<tr><td>").Append(Esc(metric)).Append("</td><td>").Append(Esc(value)).Append("</td></tr>\n");
+        }
+
+        private static void AppendSynthesis(StringBuilder sb, DiagnosticReport report)
+        {
+            if (!report.Synthesis.HasValue) return;
+            var syn = report.Synthesis.Value;
+
+            sb.Append("<div class=\"synthesis\">\n");
+
+            if (!string.IsNullOrEmpty(syn.ExecutiveSummary))
+            {
+                sb.Append("<h2>Summary</h2>\n");
+                sb.Append("<p class=\"executive-summary\">").Append(Esc(syn.ExecutiveSummary)).Append("</p>\n");
+            }
+
+            if (syn.Correlations != null && syn.Correlations.Count > 0)
+            {
+                sb.Append("<h3>Insights</h3>\n");
+                foreach (var c in syn.Correlations)
+                {
+                    string sevClass = c.Severity == Severity.Critical ? "critical"
+                        : c.Severity == Severity.Warning ? "warning" : "info";
+                    sb.Append("<div class=\"finding-card ").Append(sevClass).Append("\">\n");
+                    sb.Append("<div class=\"finding-title\">").Append(Esc(c.Title)).Append("</div>\n");
+                    sb.Append("<div class=\"finding-desc\">").Append(Esc(c.Description)).Append("</div>\n");
+                    sb.Append("<div class=\"finding-rec\">").Append(Esc(c.Recommendation)).Append("</div>\n");
+                    sb.Append("</div>\n");
+                }
+            }
+
+            if (syn.PrioritizedActions != null && syn.PrioritizedActions.Count > 0)
+            {
+                sb.Append("<h3>Prioritized Actions</h3>\n<ol>\n");
+                foreach (var a in syn.PrioritizedActions)
+                {
+                    sb.Append("<li><strong>[").Append(Esc(a.ExpectedImpact)).Append("]</strong> ");
+                    sb.Append(Esc(a.Action)).Append("</li>\n");
+                }
+                sb.Append("</ol>\n");
+            }
+
+            sb.Append("</div>\n");
         }
 
         private static void AppendFindings(StringBuilder sb, DiagnosticReport report)

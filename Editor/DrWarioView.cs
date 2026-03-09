@@ -32,7 +32,7 @@ namespace DrWario.Editor
         private string _lastFullPrompt;
         private VisualElement _sparklineElement;
         private float[] _sparklineData;
-        private Button _startBtn, _stopBtn, _analyzeBtn;
+        private Button _startBtn, _stopBtn, _analyzeBtn, _enhanceAiBtn;
         private TimelineElement _timelineElement;
 
         private DiagnosticReport _lastReport;
@@ -90,6 +90,12 @@ namespace DrWario.Editor
             _analyzeBtn.style.height = 28;
             _analyzeBtn.SetEnabled(false);
             toolbar.Add(_analyzeBtn);
+
+            _enhanceAiBtn = new Button(OnEnhanceWithAI) { text = "Enhance with AI" };
+            _enhanceAiBtn.style.height = 28;
+            _enhanceAiBtn.style.backgroundColor = new StyleColor(new Color(0.25f, 0.2f, 0.45f));
+            _enhanceAiBtn.SetEnabled(false);
+            toolbar.Add(_enhanceAiBtn);
 
             var exportJsonBtn = new Button(OnExportJson) { text = "Export JSON" };
             exportJsonBtn.style.height = 28;
@@ -675,7 +681,7 @@ namespace DrWario.Editor
             _statusLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
         }
 
-        private async void OnAnalyze()
+        private void OnAnalyze()
         {
             var session = RuntimeCollector.ActiveSession;
             if (session == null || session.FrameCount == 0)
@@ -688,30 +694,57 @@ namespace DrWario.Editor
             _statusLabel.text = "Analyzing...";
             _statusLabel.style.color = new Color(0.8f, 0.8f, 0.4f);
 
+            // Always run deterministic rules only — AI is on-demand via "Enhance with AI"
             _analysisEngine = new AnalysisEngine(_llmConfig);
+            _lastReport = _analysisEngine.Analyze(session);
 
-            bool useStreaming = _llmConfig.IsConfigured &&
-                (_llmConfig.Provider == LLMProvider.Claude || _llmConfig.Provider == LLMProvider.OpenAI);
+            _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings.";
+            _statusLabel.style.color = new Color(0.5f, 0.8f, 1f);
+
+            PopulateSummary();
+            PopulateFindings();
+            PopulateRecommendations();
+            PopulateTimeline();
+
+            _analyzeBtn.SetEnabled(true);
+            _enhanceAiBtn.SetEnabled(_llmConfig.IsConfigured);
+
+            // Auto-save to history
+            ReportHistory.Save(_lastReport);
+        }
+
+        private async void OnEnhanceWithAI()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || _lastReport == null || _analysisEngine == null)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Run Analyze first to generate a base report.", "OK");
+                return;
+            }
+
+            if (!_llmConfig.IsConfigured)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Configure an LLM provider in the LLM Settings tab first.", "OK");
+                return;
+            }
+
+            _enhanceAiBtn.SetEnabled(false);
+            _analyzeBtn.SetEnabled(false);
+
+            bool useStreaming = _llmConfig.Provider == LLMProvider.Claude || _llmConfig.Provider == LLMProvider.OpenAI;
 
             if (useStreaming)
             {
-                // Streaming path: rules run instantly, then AI findings arrive progressively
-                _statusLabel.text = "Analyzing... (rule-based done, streaming AI findings)";
+                _statusLabel.text = "Enhancing with AI (streaming)...";
+                _statusLabel.style.color = new Color(0.7f, 0.5f, 1f);
                 _isStreaming = true;
                 ShowStreamingIndicator(true);
 
-                // Show deterministic findings immediately
-                _lastReport = _analysisEngine.Analyze(session);
-                PopulateSummary();
-                PopulateFindings();
-                PopulateRecommendations();
-
-                // Subscribe to streaming findings
                 _analysisEngine.OnStreamingFindingReceived += OnStreamingFinding;
 
                 try
                 {
-                    _lastReport = await _analysisEngine.AnalyzeStreamingAsync(session);
+                    _lastReport = await _analysisEngine.EnhanceWithAIStreamingAsync(_lastReport, session);
                 }
                 finally
                 {
@@ -719,50 +752,30 @@ namespace DrWario.Editor
                     _isStreaming = false;
                     ShowStreamingIndicator(false);
                 }
-
-                string aiStatus = _analysisEngine.AICallSucceeded
-                    ? " + AI insights"
-                    : $" (AI: {_analysisEngine.AIError ?? "no findings"})";
-
-                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
-
-                // Final full UI refresh with deduplicated findings
-                PopulateSummary();
-                PopulateFindings();
-                PopulateRecommendations();
-                PopulateTimeline();
-            }
-            else if (_llmConfig.IsConfigured)
-            {
-                // Async path (Ollama/Custom): rules run instantly, then AI runs without blocking
-                _statusLabel.text = "Analyzing... (rule-based done, waiting for AI)";
-                _lastReport = await _analysisEngine.AnalyzeAsync(session);
-
-                string aiStatus = _analysisEngine.AICallSucceeded
-                    ? " + AI insights"
-                    : $" (AI: {_analysisEngine.AIError ?? "no findings"})";
-
-                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
-                PopulateSummary();
-                PopulateFindings();
-                PopulateRecommendations();
-                PopulateTimeline();
             }
             else
             {
-                // Sync path: rules only, instant
-                _lastReport = _analysisEngine.Analyze(session);
-                _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings.";
-                PopulateSummary();
-                PopulateFindings();
-                PopulateRecommendations();
-                PopulateTimeline();
+                _statusLabel.text = "Enhancing with AI...";
+                _statusLabel.style.color = new Color(0.7f, 0.5f, 1f);
+                _lastReport = await _analysisEngine.EnhanceWithAIAsync(_lastReport, session);
             }
 
-            _statusLabel.style.color = new Color(0.5f, 0.8f, 1f);
-            _analyzeBtn.SetEnabled(true);
+            string aiStatus = _analysisEngine.AICallSucceeded
+                ? " + AI insights"
+                : $" (AI: {_analysisEngine.AIError ?? "no findings"})";
 
-            // Auto-save to history
+            _statusLabel.text = $"Analysis complete. Grade: {_lastReport.OverallGrade} ({_lastReport.HealthScore:F0}/100) | {_lastReport.Findings.Count} findings{aiStatus}.";
+            _statusLabel.style.color = new Color(0.5f, 0.8f, 1f);
+
+            PopulateSummary();
+            PopulateFindings();
+            PopulateRecommendations();
+            PopulateTimeline();
+
+            _analyzeBtn.SetEnabled(true);
+            _enhanceAiBtn.SetEnabled(false); // Already enhanced
+
+            // Re-save with AI findings
             ReportHistory.Save(_lastReport);
         }
 
@@ -971,8 +984,151 @@ namespace DrWario.Editor
                 _categoryContainer.Add(card);
             }
 
+            // Synthesis section (deterministic insights, no AI)
+            AddSynthesisSection();
+
             // Charts
             AddCharts();
+        }
+
+        private void AddSynthesisSection()
+        {
+            var parent = _categoryContainer.parent;
+
+            // Remove old synthesis container if re-populating
+            var old = parent.Q<VisualElement>("synthesis-container");
+            if (old != null) parent.Remove(old);
+
+            if (!_lastReport.Synthesis.HasValue) return;
+            var syn = _lastReport.Synthesis.Value;
+
+            var container = new VisualElement();
+            container.name = "synthesis-container";
+            container.style.marginTop = 10;
+            container.style.marginBottom = 4;
+
+            // Executive summary card
+            if (!string.IsNullOrEmpty(syn.ExecutiveSummary))
+            {
+                var summaryCard = new VisualElement();
+                summaryCard.style.backgroundColor = new StyleColor(new Color(0.14f, 0.16f, 0.20f));
+                summaryCard.style.paddingTop = 10;
+                summaryCard.style.paddingBottom = 10;
+                summaryCard.style.paddingLeft = 12;
+                summaryCard.style.paddingRight = 12;
+                summaryCard.style.borderLeftWidth = 3;
+                summaryCard.style.borderLeftColor = new Color(0.3f, 0.7f, 1f);
+                summaryCard.style.marginBottom = 8;
+
+                var summaryTitle = new Label("Summary");
+                summaryTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+                summaryTitle.style.fontSize = 13;
+                summaryTitle.style.color = new Color(0.3f, 0.7f, 1f);
+                summaryTitle.style.marginBottom = 4;
+                summaryCard.Add(summaryTitle);
+
+                var summaryText = new Label(syn.ExecutiveSummary);
+                summaryText.style.fontSize = 11;
+                summaryText.style.color = new Color(0.8f, 0.8f, 0.8f);
+                summaryText.style.whiteSpace = WhiteSpace.Normal;
+                summaryCard.Add(summaryText);
+
+                container.Add(summaryCard);
+            }
+
+            // Correlation insights
+            if (syn.Correlations != null && syn.Correlations.Count > 0)
+            {
+                var insightsTitle = new Label("Insights");
+                insightsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+                insightsTitle.style.fontSize = 12;
+                insightsTitle.style.marginTop = 6;
+                insightsTitle.style.marginBottom = 4;
+                insightsTitle.style.color = new Color(0.9f, 0.75f, 0.3f);
+                container.Add(insightsTitle);
+
+                foreach (var c in syn.Correlations)
+                {
+                    var insightCard = new VisualElement();
+                    insightCard.style.backgroundColor = new StyleColor(new Color(0.16f, 0.15f, 0.12f));
+                    insightCard.style.paddingTop = 6;
+                    insightCard.style.paddingBottom = 6;
+                    insightCard.style.paddingLeft = 10;
+                    insightCard.style.paddingRight = 10;
+                    insightCard.style.marginBottom = 4;
+                    insightCard.style.borderLeftWidth = 2;
+                    insightCard.style.borderLeftColor = SeverityColor(c.Severity);
+
+                    var cTitle = new Label(c.Title);
+                    cTitle.style.fontSize = 11;
+                    cTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    cTitle.style.color = new Color(0.9f, 0.9f, 0.9f);
+                    insightCard.Add(cTitle);
+
+                    var cDesc = new Label(c.Recommendation);
+                    cDesc.style.fontSize = 10;
+                    cDesc.style.color = new Color(0.6f, 0.7f, 0.6f);
+                    cDesc.style.whiteSpace = WhiteSpace.Normal;
+                    cDesc.style.marginTop = 2;
+                    insightCard.Add(cDesc);
+
+                    container.Add(insightCard);
+                }
+            }
+
+            // Prioritized actions
+            if (syn.PrioritizedActions != null && syn.PrioritizedActions.Count > 0)
+            {
+                var actionsTitle = new Label("Prioritized Actions");
+                actionsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+                actionsTitle.style.fontSize = 12;
+                actionsTitle.style.marginTop = 6;
+                actionsTitle.style.marginBottom = 4;
+                actionsTitle.style.color = new Color(0.4f, 0.8f, 0.4f);
+                container.Add(actionsTitle);
+
+                int maxActions = Mathf.Min(syn.PrioritizedActions.Count, 5);
+                for (int i = 0; i < maxActions; i++)
+                {
+                    var a = syn.PrioritizedActions[i];
+                    var actionRow = new VisualElement();
+                    actionRow.style.flexDirection = FlexDirection.Row;
+                    actionRow.style.marginBottom = 3;
+                    actionRow.style.paddingLeft = 4;
+
+                    var numLabel = new Label($"{a.Priority}.");
+                    numLabel.style.fontSize = 11;
+                    numLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
+                    numLabel.style.width = 20;
+                    numLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    actionRow.Add(numLabel);
+
+                    Color impactColor = a.ExpectedImpact == "High"
+                        ? new Color(1f, 0.5f, 0.3f)
+                        : a.ExpectedImpact == "Medium"
+                            ? new Color(1f, 0.8f, 0.3f)
+                            : new Color(0.6f, 0.6f, 0.6f);
+
+                    var impactBadge = new Label($"[{a.ExpectedImpact}]");
+                    impactBadge.style.fontSize = 9;
+                    impactBadge.style.color = impactColor;
+                    impactBadge.style.width = 50;
+                    actionRow.Add(impactBadge);
+
+                    var actionText = new Label(a.Action);
+                    actionText.style.fontSize = 11;
+                    actionText.style.color = new Color(0.8f, 0.8f, 0.8f);
+                    actionText.style.whiteSpace = WhiteSpace.Normal;
+                    actionText.style.flexGrow = 1;
+                    actionRow.Add(actionText);
+
+                    container.Add(actionRow);
+                }
+            }
+
+            // Insert before charts
+            int catIdx = parent.IndexOf(_categoryContainer);
+            parent.Insert(catIdx + 1, container);
         }
 
         private void AddCharts()
@@ -1003,7 +1159,7 @@ namespace DrWario.Editor
             memChart.style.height = 120;
             memChart.style.marginBottom = 8;
 
-            int step = Math.Max(1, frames.Length / 12);
+            int step = Mathf.Max(1, frames.Length / 12);
             float startTime = frames[0].Timestamp;
             var memValues = new List<float>();
             var memTimes = new List<float>();
@@ -1038,7 +1194,7 @@ namespace DrWario.Editor
                 gcChart.HighlightThreshold = 1024;
 
                 // Downsample GC data to ~100 bars max
-                int gcStep = Math.Max(1, frames.Length / 100);
+                int gcStep = Mathf.Max(1, frames.Length / 100);
                 var gcValues = new float[frames.Length / gcStep + 1];
                 for (int i = 0, j = 0; i < frames.Length && j < gcValues.Length; i += gcStep, j++)
                     gcValues[j] = frames[i].GcAllocBytes;

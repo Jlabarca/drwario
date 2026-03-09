@@ -61,7 +61,7 @@ namespace DrWario.Editor
                         case LightType.Directional: census.DirectionalLights++; break;
                         case LightType.Point: census.PointLights++; break;
                         case LightType.Spot: census.SpotLights++; break;
-                        case LightType.Area: census.AreaLights++; break;
+                        case LightType.Rectangle: census.AreaLights++; break;
                     }
                 }
 

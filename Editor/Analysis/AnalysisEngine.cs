@@ -100,77 +100,77 @@ namespace DrWario.Editor.Analysis
                 });
             }
 
+            // Phase 2: Correlation detection — find cross-cutting patterns
+            var correlations = CorrelationEngine.Detect(report.Findings, session);
+            if (correlations.Count > 0)
+                UnityEngine.Debug.Log($"[DrWario] Found {correlations.Count} correlation(s) across findings.");
+
             report.ComputeGrades();
-            return report;
-        }
 
-        /// <summary>
-        /// Runs deterministic rules synchronously, then AI analysis asynchronously.
-        /// Never blocks the main thread.
-        /// </summary>
-        public async Task<DiagnosticReport> AnalyzeAsync(ProfilingSession session)
-        {
-            // Phase 1: Run deterministic rules (fast, synchronous)
-            var report = Analyze(session);
-
-            // Phase 2: Run AI rule asynchronously
-            if (_aiRule != null)
-            {
-                _aiRule.RuleFindings = new List<DiagnosticFinding>(report.Findings);
-                var aiFindings = await _aiRule.AnalyzeAsync(session);
-                if (aiFindings != null)
-                    report.Findings.AddRange(aiFindings);
-
-                // Phase 3: Deduplicate — AI findings get priority
-                report.Findings = DeduplicateFindings(report.Findings);
-                report.ComputeGrades();
-            }
+            // Phase 3: Report synthesis — executive summary, prioritized actions
+            report.Synthesis = ReportSynthesizer.Synthesize(report, correlations, session);
+            UnityEngine.Debug.Log($"[DrWario] Report synthesis: {report.Synthesis.Value.PrioritizedActions.Count} prioritized actions.");
 
             return report;
         }
 
         /// <summary>
-        /// Runs deterministic rules synchronously, then AI analysis via SSE streaming.
-        /// Fires OnStreamingFindingReceived for each AI finding as it arrives from the stream.
-        /// Returns the final report with all findings (deterministic + AI) after stream completes.
+        /// Enhance an existing report with AI analysis (non-streaming).
+        /// Does not re-run deterministic rules.
         /// </summary>
-        public async Task<DiagnosticReport> AnalyzeStreamingAsync(ProfilingSession session)
+        public async Task<DiagnosticReport> EnhanceWithAIAsync(DiagnosticReport report, ProfilingSession session)
         {
-            // Phase 1: Run deterministic rules (fast, synchronous)
-            var report = Analyze(session);
+            if (_aiRule == null) return report;
 
-            // Phase 2: Run AI rule with streaming
-            if (_aiRule != null)
-            {
-                _aiRule.RuleFindings = new List<DiagnosticFinding>(report.Findings);
+            _aiRule.RuleFindings = new List<DiagnosticFinding>(report.Findings);
+            var aiFindings = await _aiRule.AnalyzeAsync(session);
+            if (aiFindings != null)
+                report.Findings.AddRange(aiFindings);
 
-                var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+            report.Findings = DeduplicateFindings(report.Findings);
+            report.ComputeGrades();
+            var correlations = CorrelationEngine.Detect(report.Findings, session);
+            report.Synthesis = ReportSynthesizer.Synthesize(report, correlations, session);
 
-                await _aiRule.AnalyzeStreamingAsync(
-                    session,
-                    onFindingParsed: finding =>
-                    {
-                        report.Findings.Add(finding);
-                        OnStreamingFindingReceived?.Invoke(finding);
-                    },
-                    onComplete: _ =>
-                    {
-                        // Phase 3: Deduplicate and recompute grades
-                        report.Findings = DeduplicateFindings(report.Findings);
-                        report.ComputeGrades();
-                        tcs.TrySetResult(true);
-                    },
-                    onError: error =>
-                    {
-                        UnityEngine.Debug.LogWarning($"[DrWario] Streaming analysis error: {error}");
-                        tcs.TrySetResult(false);
-                    }
-                );
+            return report;
+        }
 
-                // Wait for streaming to signal completion via callbacks
-                await tcs.Task;
-            }
+        /// <summary>
+        /// Enhance an existing report with AI analysis via SSE streaming.
+        /// Fires OnStreamingFindingReceived for each AI finding as it arrives.
+        /// Does not re-run deterministic rules.
+        /// </summary>
+        public async Task<DiagnosticReport> EnhanceWithAIStreamingAsync(DiagnosticReport report, ProfilingSession session)
+        {
+            if (_aiRule == null) return report;
 
+            _aiRule.RuleFindings = new List<DiagnosticFinding>(report.Findings);
+
+            var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+
+            await _aiRule.AnalyzeStreamingAsync(
+                session,
+                onFindingParsed: finding =>
+                {
+                    report.Findings.Add(finding);
+                    OnStreamingFindingReceived?.Invoke(finding);
+                },
+                onComplete: _ =>
+                {
+                    report.Findings = DeduplicateFindings(report.Findings);
+                    report.ComputeGrades();
+                    var postCorrelations = CorrelationEngine.Detect(report.Findings, session);
+                    report.Synthesis = ReportSynthesizer.Synthesize(report, postCorrelations, session);
+                    tcs.TrySetResult(true);
+                },
+                onError: error =>
+                {
+                    UnityEngine.Debug.LogWarning($"[DrWario] Streaming analysis error: {error}");
+                    tcs.TrySetResult(false);
+                }
+            );
+
+            await tcs.Task;
             return report;
         }
 

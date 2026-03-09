@@ -24,6 +24,12 @@ namespace DrWario.Editor.Analysis
         public float AvgDrawCalls;
         public float MemorySlope;
 
+        /// <summary>
+        /// Deterministic report synthesis — executive summary, prioritized actions, correlations.
+        /// Populated by ReportSynthesizer after correlation detection. No AI required.
+        /// </summary>
+        public ReportSynthesizer.ReportSynthesis? Synthesis;
+
         public void ComputeGrades()
         {
             // Overall: start at 100, subtract per finding.
@@ -70,6 +76,28 @@ namespace DrWario.Editor.Analysis
             }
         }
 
+        private static string WordWrap(string text, int maxWidth)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length <= maxWidth) return $"  {text}";
+            var sb = new StringBuilder();
+            var words = text.Split(' ');
+            int lineLen = 0;
+            sb.Append("  ");
+            foreach (var word in words)
+            {
+                if (lineLen + word.Length + 1 > maxWidth && lineLen > 0)
+                {
+                    sb.AppendLine();
+                    sb.Append("  ");
+                    lineLen = 0;
+                }
+                if (lineLen > 0) { sb.Append(' '); lineLen++; }
+                sb.Append(word);
+                lineLen += word.Length;
+            }
+            return sb.ToString();
+        }
+
         private static char ScoreToGrade(float score) => score switch
         {
             >= 90f => 'A',
@@ -103,6 +131,40 @@ namespace DrWario.Editor.Analysis
 
             foreach (var kv in CategoryGrades)
                 sb.AppendLine($"  [{kv.Value}] {kv.Key}");
+
+            // Synthesis section (deterministic, no AI)
+            if (Synthesis.HasValue)
+            {
+                var syn = Synthesis.Value;
+
+                sb.AppendLine();
+                sb.AppendLine("───────────────────────────────────────");
+                sb.AppendLine("  Summary");
+                sb.AppendLine("───────────────────────────────────────");
+                sb.AppendLine();
+                sb.AppendLine(WordWrap(syn.ExecutiveSummary, 60));
+
+                if (syn.Correlations != null && syn.Correlations.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("  Insights:");
+                    foreach (var c in syn.Correlations)
+                    {
+                        sb.AppendLine($"  * {c.Title}");
+                        sb.AppendLine($"    {c.Description}");
+                    }
+                }
+
+                if (syn.PrioritizedActions != null && syn.PrioritizedActions.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("  Prioritized Actions:");
+                    foreach (var a in syn.PrioritizedActions)
+                    {
+                        sb.AppendLine($"  {a.Priority}. [{a.ExpectedImpact}] {a.Action}");
+                    }
+                }
+            }
 
             sb.AppendLine();
             sb.AppendLine("───────────────────────────────────────");

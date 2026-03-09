@@ -30,6 +30,10 @@ namespace DrWario.Editor.Analysis.Rules
             if (isEditor && baseline.IsValid)
                 effectiveThreshold = SpikeThresholdBytes + baseline.AvgGcAllocBytes;
 
+            // Exclude frames where DrWario itself triggered expensive captures
+            // (scene hierarchy enumeration causes GC allocations that aren't the game's fault)
+            var captureFrames = session.DrWarioCaptureFrames;
+
             int spikeCount = 0;
             int rawSpikeCount = 0;
             long worstAlloc = 0;
@@ -38,6 +42,10 @@ namespace DrWario.Editor.Analysis.Rules
 
             for (int i = 0; i < frames.Length; i++)
             {
+                // Skip frames where DrWario performed expensive captures
+                if (captureFrames.Contains(frames[i].FrameNumber))
+                    continue;
+
                 if (frames[i].GcAllocBytes > SpikeThresholdBytes)
                     rawSpikeCount++;
 

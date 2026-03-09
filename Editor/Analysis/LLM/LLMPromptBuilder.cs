@@ -190,6 +190,9 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             // Scene census
             AppendSceneCensus(sb, session);
 
+            // Scene snapshot diffs (object churn during session)
+            AppendSceneSnapshots(sb, session);
+
             // Pre-analysis (rule-based findings)
             AppendPreAnalysis(sb, ruleFindings);
 
@@ -524,6 +527,88 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                 sb.AppendLine($"      {{ \"assetKey\": \"{EscapeJson(l.AssetKey)}\", \"durationMs\": {l.DurationMs} }}{comma}");
             }
             sb.AppendLine("    ]");
+            sb.AppendLine("  },");
+        }
+
+        private static void AppendSceneSnapshots(StringBuilder sb, ProfilingSession session)
+        {
+            var snapshots = session.SceneSnapshots;
+            if (snapshots == null || snapshots.Count == 0)
+            {
+                sb.AppendLine("  \"sceneSnapshots\": null,");
+                return;
+            }
+
+            // Summarize: baseline count, final count, significant diffs only
+            var baseline = snapshots[0];
+            var last = snapshots[snapshots.Count - 1];
+            int netGrowth = last.TotalObjectCount - baseline.TotalObjectCount;
+
+            sb.AppendLine("  \"sceneSnapshots\": {");
+            sb.AppendLine($"    \"baselineObjectCount\": {baseline.TotalObjectCount},");
+            sb.AppendLine($"    \"finalObjectCount\": {last.TotalObjectCount},");
+            sb.AppendLine($"    \"netGrowth\": {netGrowth},");
+            sb.AppendLine($"    \"snapshotCount\": {snapshots.Count},");
+
+            // Include top object names added (most frequently instantiated types)
+            var addedNames = new Dictionary<string, int>();
+            foreach (var snap in snapshots)
+            {
+                if (snap.Added == null) continue;
+                foreach (var obj in snap.Added)
+                {
+                    // Strip "(Clone)" suffix and instance numbers for grouping
+                    string baseName = obj.Name;
+                    int cloneIdx = baseName.IndexOf("(Clone)");
+                    if (cloneIdx > 0) baseName = baseName.Substring(0, cloneIdx).Trim();
+
+                    if (addedNames.ContainsKey(baseName))
+                        addedNames[baseName]++;
+                    else
+                        addedNames[baseName] = 1;
+                }
+            }
+
+            if (addedNames.Count > 0)
+            {
+                sb.AppendLine("    \"topInstantiatedObjects\": [");
+                var top = addedNames.OrderByDescending(kv => kv.Value).Take(10);
+                bool first = true;
+                foreach (var kv in top)
+                {
+                    if (!first) sb.AppendLine(",");
+                    first = false;
+                    sb.Append($"      {{ \"name\": \"{EscapeJson(kv.Key)}\", \"count\": {kv.Value} }}");
+                }
+                sb.AppendLine();
+                sb.AppendLine("    ],");
+            }
+
+            // Include significant diffs (spikes only, not periodic)
+            var significantDiffs = new List<string>();
+            foreach (var snap in snapshots)
+            {
+                if (snap.Trigger != SnapshotTrigger.FrameSpike && snap.Trigger != SnapshotTrigger.GcSpike)
+                    continue;
+                int added = snap.Added?.Length ?? 0;
+                int removed = snap.Removed?.Length ?? 0;
+                if (added > 0 || removed > 0)
+                {
+                    significantDiffs.Add($"      {{ \"frame\": {snap.FrameIndex}, \"trigger\": \"{snap.Trigger}\", \"added\": {added}, \"removed\": {removed}, \"total\": {snap.TotalObjectCount} }}");
+                }
+            }
+
+            if (significantDiffs.Count > 0)
+            {
+                sb.AppendLine("    \"spikeFrameDiffs\": [");
+                sb.AppendLine(string.Join(",\n", significantDiffs));
+                sb.AppendLine("    ]");
+            }
+            else
+            {
+                sb.AppendLine("    \"spikeFrameDiffs\": []");
+            }
+
             sb.AppendLine("  },");
         }
 

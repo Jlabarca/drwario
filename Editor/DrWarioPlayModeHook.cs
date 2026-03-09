@@ -12,6 +12,7 @@ namespace DrWario.Editor
     public static class DrWarioPlayModeHook
     {
         private const string PrefKey = "DrWario_AutoStart";
+        private static SceneSnapshotTracker _snapshotTracker;
 
         public static bool AutoStartEnabled
         {
@@ -28,12 +29,10 @@ namespace DrWario.Editor
 
         private static void OnPlayModeChanged(PlayModeStateChange state)
         {
-            if (!AutoStartEnabled) return;
-
             switch (state)
             {
                 case PlayModeStateChange.EnteredPlayMode:
-                    // Delay one frame to let Unity settle
+                    if (!AutoStartEnabled) break;
                     EditorApplication.delayCall += () =>
                     {
                         RuntimeCollector.StartSession();
@@ -42,13 +41,24 @@ namespace DrWario.Editor
                     break;
 
                 case PlayModeStateChange.ExitingPlayMode:
-                    if (RuntimeCollector.ActiveSession?.IsRecording == true)
+                    // Always clean up snapshot tracker (runs for both manual and auto sessions)
+                    RuntimeCollector.OnFrameSampled -= OnFrameSampled;
+                    _snapshotTracker?.StopSession();
+                    _snapshotTracker = null;
+
+                    if (AutoStartEnabled && RuntimeCollector.ActiveSession?.IsRecording == true)
                     {
                         RuntimeCollector.StopSession();
                         Debug.Log($"[DrWario] Auto-stopped. {RuntimeCollector.ActiveSession?.FrameCount ?? 0} frames captured.");
                     }
                     break;
             }
+        }
+
+        private static void OnFrameSampled(ref FrameSample sample)
+        {
+            if (_snapshotTracker != null)
+                sample.ObjectCount = _snapshotTracker.OnFrame(sample);
         }
 
         /// <summary>
@@ -85,6 +95,12 @@ namespace DrWario.Editor
                           $"{session.SceneCensus.CanvasCount} canvases, " +
                           $"{session.SceneCensus.DirectionalLights + session.SceneCensus.PointLights + session.SceneCensus.SpotLights + session.SceneCensus.AreaLights} lights");
             }
+
+            // Start scene snapshot tracker for hierarchy diff tracking
+            _snapshotTracker?.StopSession();
+            _snapshotTracker = new SceneSnapshotTracker();
+            _snapshotTracker.StartSession(session);
+            RuntimeCollector.OnFrameSampled += OnFrameSampled;
 
             if (baseline.IsValid)
             {

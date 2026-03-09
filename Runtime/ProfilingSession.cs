@@ -15,6 +15,9 @@ namespace DrWario.Runtime
         private readonly List<AssetLoadTiming> _assetLoads = new();
         private readonly List<NetworkEvent> _networkEvents = new();
         private readonly List<ProfilerMarkerSample> _profilerMarkers = new();
+        private readonly List<SceneSnapshotDiff> _sceneSnapshots = new();
+        private const int MaxSnapshots = 100;
+        private readonly HashSet<int> _drwarioCaptureFrames = new();
 
         public SessionMetadata Metadata;
         public SceneCensus SceneCensus;
@@ -140,6 +143,26 @@ namespace DrWario.Runtime
                 _profilerMarkers.AddRange(markers);
         }
 
+        public void RecordSceneSnapshot(SceneSnapshotDiff snapshot)
+        {
+            if (_sceneSnapshots.Count < MaxSnapshots)
+                _sceneSnapshots.Add(snapshot);
+        }
+
+        /// <summary>
+        /// Mark a frame number as one where DrWario performed expensive captures
+        /// (e.g., scene hierarchy enumeration). Rules should exclude these frames
+        /// from GC spike detection to avoid false positives from DrWario's own allocations.
+        /// </summary>
+        public void MarkCaptureFrame(int frameNumber) => _drwarioCaptureFrames.Add(frameNumber);
+
+        /// <summary>
+        /// Frame numbers where DrWario itself triggered expensive operations.
+        /// GC/CPU rules should exclude these to prevent false positive findings.
+        /// </summary>
+        public IReadOnlyCollection<int> DrWarioCaptureFrames => _drwarioCaptureFrames;
+
+        public IReadOnlyList<SceneSnapshotDiff> SceneSnapshots => _sceneSnapshots;
         public IReadOnlyList<BootStageTiming> BootStages => _bootStages;
         public IReadOnlyList<AssetLoadTiming> AssetLoads => _assetLoads;
         public IReadOnlyList<NetworkEvent> NetworkEvents => _networkEvents;

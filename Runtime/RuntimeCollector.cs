@@ -22,12 +22,27 @@ namespace DrWario.Runtime
         /// </summary>
         public static event Action<ProfilingSession> OnSessionStarted;
 
+        /// <summary>
+        /// Fired each frame after sampling, before recording to the session.
+        /// Editor code can use this to trigger scene snapshots on spike frames.
+        /// </summary>
+        public delegate void FrameSampledHandler(ref FrameSample sample);
+        public static event FrameSampledHandler OnFrameSampled;
+
         private long _prevTotalGcAlloc;
         private static RuntimeCollector _instance;
         private FrameTiming[] _frameTimings = new FrameTiming[1];
         private ProfilerBridge _profilerBridge;
+        private int _cachedObjectCount;
+        private int _objectCountSampleInterval = 60;
+        private int _framesSinceObjectCount;
 
         private static readonly ProfilerMarker s_SampleMarker = new ProfilerMarker("DrWario.Sample");
+
+        // Tracks DrWario's own overhead so it can be subtracted from CPU measurements.
+        // ProfilerRecorder reports the previous frame's value, which matches when
+        // FrameTimingManager/ProfilerBridge also report previous-frame CPU time.
+        private ProfilerRecorder _selfOverheadRecorder;
 
         /// <summary>
         /// Accumulates per-frame profiler marker timing data across the session.
@@ -70,8 +85,15 @@ namespace DrWario.Runtime
             // Detect whether the Unity Profiler was already recording
             ActiveSession.ProfilerWasRecording = Profiler.enabled;
 
+            // Start self-overhead recorder to subtract DrWario's own cost from CPU measurements
+            collector._selfOverheadRecorder.Dispose(); // safe even if default/uninitialized
+            collector._selfOverheadRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "DrWario.Sample", 1);
+
             // Start profiler marker recorders for subsystem timing
             collector.StartMarkerRecorders();
+
+            collector._framesSinceObjectCount = 0;
+            collector._cachedObjectCount = 0;
 
             collector.enabled = true;
 
@@ -164,6 +186,7 @@ namespace DrWario.Runtime
             if (_instance != null)
             {
                 _instance.enabled = false;
+                _instance._selfOverheadRecorder.Dispose();
                 _instance._profilerBridge?.Dispose();
                 _instance._profilerBridge = null;
             }
@@ -174,6 +197,7 @@ namespace DrWario.Runtime
             if (_instance != null)
             {
                 _instance.DisposeMarkerRecorders();
+                _instance._selfOverheadRecorder.Dispose();
                 _instance._profilerBridge?.Dispose();
                 Destroy(_instance.gameObject);
                 _instance = null;
@@ -212,6 +236,11 @@ namespace DrWario.Runtime
                 }
 
                 bool hasBridge = _profilerBridge != null && _profilerBridge.IsActive;
+
+                // Subtract DrWario's own overhead from CPU measurement (recorder reports previous frame)
+                float selfOverheadMs = 0f;
+                if (_selfOverheadRecorder.Valid && _selfOverheadRecorder.CurrentValue > 0)
+                    selfOverheadMs = _selfOverheadRecorder.CurrentValue / 1_000_000f; // ns → ms
 
                 // Frame timing — prefer ProfilerRecorder, fallback to FrameTimingManager, then deltaTime
                 float cpuMs = 0f, gpuMs = 0f, renderMs = 0f;
@@ -258,11 +287,23 @@ namespace DrWario.Runtime
                     meshMem = Profiler.GetTotalReservedMemoryLong() - totalHeap;
                 }
 
+                // Native memory + GC generation count (cheap per-frame)
+                long nativeMemory = Profiler.GetTotalReservedMemoryLong();
+                int gcGenCount = System.GC.CollectionCount(0);
+
+                // Object count: sample periodically to avoid per-frame FindObjectsByType cost
+                _framesSinceObjectCount++;
+                if (_framesSinceObjectCount >= _objectCountSampleInterval)
+                {
+                    _framesSinceObjectCount = 0;
+                    _cachedObjectCount = FindObjectsByType<Transform>(FindObjectsSortMode.None).Length;
+                }
+
                 var sample = new FrameSample
                 {
                     Timestamp = Time.realtimeSinceStartup,
                     DeltaTime = Time.unscaledDeltaTime,
-                    CpuFrameTimeMs = cpuMs > 0 ? cpuMs : Time.unscaledDeltaTime * 1000f,
+                    CpuFrameTimeMs = (cpuMs > 0 ? cpuMs : Time.unscaledDeltaTime * 1000f) - selfOverheadMs,
                     GpuFrameTimeMs = gpuMs,
                     RenderThreadMs = renderMs,
                     GcAllocBytes = gcAllocBytes,
@@ -287,8 +328,15 @@ namespace DrWario.Runtime
                     AnimatorCount = hasBridge ? _profilerBridge.AnimatorCount : 0,
                     UICanvasRebuilds = hasBridge ? _profilerBridge.UICanvasRebuilds : 0,
                     UILayoutRebuilds = hasBridge ? _profilerBridge.UILayoutRebuilds : 0,
+
+                    ObjectCount = _cachedObjectCount,
+                    NativeMemoryBytes = nativeMemory,
+                    GcCollectionCount = gcGenCount,
                     FrameNumber = Time.frameCount,
                 };
+
+                // Notify per-frame listeners (editor snapshot tracker hooks here)
+                OnFrameSampled?.Invoke(ref sample);
 
                 ActiveSession.RecordFrame(sample);
             }
@@ -297,6 +345,7 @@ namespace DrWario.Runtime
         private void OnDestroy()
         {
             DisposeMarkerRecorders();
+            _selfOverheadRecorder.Dispose();
             _profilerBridge?.Dispose();
             if (_instance == this)
                 _instance = null;

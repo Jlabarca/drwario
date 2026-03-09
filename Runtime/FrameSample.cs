@@ -37,6 +37,15 @@ namespace DrWario.Runtime
         public int UICanvasRebuilds;
         public int UILayoutRebuilds;
 
+        // Scene object count (sampled periodically, held between samples)
+        public int ObjectCount;
+
+        // Native/reserved memory (from Profiler API)
+        public long NativeMemoryBytes;
+
+        // GC generation 0 collection count (cumulative, use delta for per-frame)
+        public int GcCollectionCount;
+
         // Absolute frame number for Profiler frame navigation
         public int FrameNumber;
     }
