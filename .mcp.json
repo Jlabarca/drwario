@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "unityMCP": {
+      "command": "C:\\Users\\Administrator\\scoop\\shims\\uvx.exe",
+      "args": ["--offline", "--from", "mcpforunityserver==9.4.7", "mcp-for-unity", "--transport", "stdio", "--http-url", "http://localhost:8080", "--project-scoped-tools"]
+    }
+  }
+}

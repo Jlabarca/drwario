@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Notion__notion-search",
+      "mcp__claude_ai_Notion__notion-create-pages",
+      "Bash(gh api repos/github/spec-kit/readme --jq '.content')",
+      "Bash(uv --version)",
+      "Bash(pip --version)",
+      "Bash(uv tool install specify-cli --from git+https://github.com/github/spec-kit.git)"
+    ]
+  }
+}
