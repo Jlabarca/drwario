@@ -40,6 +40,7 @@ namespace DrWario.Runtime
     public struct ActiveScriptEntry
     {
         public string TypeName;
+        public string Namespace;        // Namespace of the script type (null if global)
         public int InstanceCount;
         public string[] SampleGameObjectNames; // First N GameObjects with this script
     }

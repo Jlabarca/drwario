@@ -31,6 +31,11 @@ Each finding object must have these exact fields:
 - scriptPath (string, optional): relative Unity asset path to the script causing the issue (e.g. ""Assets/Scripts/PlayerController.cs""). Include only when you can identify a specific script.
 - scriptLine (int, optional): line number in the script, 0 if unknown
 - assetPath (string, optional): relative Unity asset path to a related asset (e.g. ""Assets/Textures/LargeTexture.png""). Include only when you can identify a specific asset.
+- confidence (string): one of ""High"", ""Medium"", ""Low"". Use ""High"" when the data strongly supports the finding, ""Medium"" when likely but uncertain, ""Low"" when the finding may be caused by editor overhead or insufficient data.
+- environmentNote (string, optional): if the session is from the Unity Editor and the finding may be inflated by editor overhead, include a brief note explaining the uncertainty.
+
+Example of a high-quality finding:
+{""ruleId"":""AI_GC_INSTANTIATE_SPIKE"",""category"":""Memory"",""severity"":""Warning"",""title"":""Object instantiation causing GC spikes during gameplay"",""description"":""50 frames show GC allocation >10KB/frame (avg 14.2KB). Scene snapshots show Bullet(Clone) instantiated 340 times. BulletSpawner (x2 instances on EnemyShip, PlayerShip) is the likely source."",""recommendation"":""Pool Bullet instances using ObjectPool<T>. Pre-warm 50 in Start(). Replace Instantiate() with pool.Get() and Destroy() with pool.Release()."",""metric"":14200,""threshold"":1024,""scriptPath"":""Assets/Scripts/BulletSpawner.cs"",""scriptLine"":0,""confidence"":""High""}
 
 Focus on:
 1. Correlations between metrics (e.g. GC spikes causing frame drops)
@@ -57,7 +62,7 @@ When scene census data is provided (sceneCensus), consider scene composition in 
 
 When profilerMarkers data is available, reference specific marker names in your findings rather than guessing which subsystem is expensive. Use the marker timing data to attribute frame budget usage.
 
-When activeScripts data is available, use it to identify specific scripts as suspects. For example, if GC spikes correlate with a script that has many instances, name it as a likely cause. The ""on"" field shows sample GameObjects running that script. Reference specific script names in your scriptPath field when you can identify them.
+When activeScripts data is available, use it to identify specific scripts as suspects. For example, if GC spikes correlate with a script that has many instances, name it as a likely cause. The ""on"" field shows sample GameObjects running that script. The ""ns"" field shows the script's namespace — use it to distinguish user code from third-party plugins (e.g. Photon, Mirror). Prioritize user scripts (custom namespaces) over third-party code when recommending fixes. Reference specific script names in your scriptPath field when you can identify them.
 
 When consoleLogs data is available (errors/warnings captured during profiling), correlate them with performance findings. Errors during frame spikes are especially relevant — they may indicate the root cause.
 
@@ -400,6 +405,9 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"    \"screenHeight\": {session.Metadata.ScreenHeight}");
             sb.AppendLine("  },");
 
+            // Pre-analysis first — tells the LLM what deterministic rules already found
+            AppendPreAnalysis(sb, ruleFindings);
+
             // Environment context (editor vs build)
             AppendEnvironment(sb, session);
 
@@ -432,9 +440,6 @@ If data is insufficient for a definitive answer, say so and suggest what additio
 
             // Console logs (errors/warnings during session)
             AppendConsoleLogs(sb, session);
-
-            // Pre-analysis (rule-based findings)
-            AppendPreAnalysis(sb, ruleFindings);
 
             sb.AppendLine("}");
             return sb.ToString();
@@ -564,11 +569,15 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"      \"min\": {cpuTimes.Min():F2}");
             sb.AppendLine("    },");
 
-            sb.AppendLine("    \"gpuFrameTime\": {");
-            sb.AppendLine($"      \"avg\": {gpuTimes.Average():F2},");
-            sb.AppendLine($"      \"p95\": {Percentile(gpuTimes, 0.95f):F2},");
-            sb.AppendLine($"      \"max\": {gpuTimes.Max():F2}");
-            sb.AppendLine("    },");
+            bool hasGpuData = gpuTimes.Any(t => t > 0);
+            if (hasGpuData)
+            {
+                sb.AppendLine("    \"gpuFrameTime\": {");
+                sb.AppendLine($"      \"avg\": {gpuTimes.Average():F2},");
+                sb.AppendLine($"      \"p95\": {Percentile(gpuTimes, 0.95f):F2},");
+                sb.AppendLine($"      \"max\": {gpuTimes.Max():F2}");
+                sb.AppendLine("    },");
+            }
 
             // Render thread timing
             var renderTimes = frames.Select(f => f.RenderThreadMs).Where(t => t > 0).ToArray();
@@ -863,7 +872,8 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                 var s = scripts[i];
                 string names = string.Join(", ", s.SampleGameObjectNames ?? Array.Empty<string>());
                 string comma = i < scripts.Count - 1 ? "," : "";
-                sb.AppendLine($"    {{ \"type\": \"{EscapeJson(s.TypeName)}\", \"instances\": {s.InstanceCount}, \"on\": \"{EscapeJson(names)}\" }}{comma}");
+                string nsField = s.Namespace != null ? $", \"ns\": \"{EscapeJson(s.Namespace)}\"" : "";
+                sb.AppendLine($"    {{ \"type\": \"{EscapeJson(s.TypeName)}\"{nsField}, \"instances\": {s.InstanceCount}, \"on\": \"{EscapeJson(names)}\" }}{comma}");
             }
             sb.AppendLine("  ],");
         }
@@ -890,7 +900,7 @@ If data is insufficient for a definitive answer, say so and suggest what additio
         {
             if (findings == null || findings.Count == 0)
             {
-                sb.AppendLine("  \"preAnalysis\": null");
+                sb.AppendLine("  \"preAnalysis\": null,");
                 return;
             }
 
@@ -904,7 +914,7 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                 sb.AppendLine($"      {{ \"ruleId\": \"{f.RuleId}\", \"category\": \"{f.Category}\", \"severity\": \"{f.Severity}\", \"confidence\": \"{f.Confidence}\", \"title\": \"{EscapeJson(f.Title)}\", \"metric\": {f.Metric:F1}, \"threshold\": {f.Threshold:F1} }}{comma}");
             }
             sb.AppendLine("    ]");
-            sb.AppendLine("  }");
+            sb.AppendLine("  },");
         }
 
         private static void AppendExtendedCounters(StringBuilder sb, ProfilingSession session)
@@ -977,14 +987,22 @@ If data is insufficient for a definitive answer, say so and suggest what additio
 
             if (census.ComponentDistribution != null && census.ComponentDistribution.Length > 0)
             {
-                sb.AppendLine("    \"componentDistribution\": [");
-                for (int i = 0; i < census.ComponentDistribution.Length; i++)
+                // Filter out trivial Unity built-in components that add noise without diagnostic value
+                var meaningful = census.ComponentDistribution
+                    .Where(c => !IsTrivialComponent(c.TypeName))
+                    .ToArray();
+
+                if (meaningful.Length > 0)
                 {
-                    var c = census.ComponentDistribution[i];
-                    string comma = i < census.ComponentDistribution.Length - 1 ? "," : "";
-                    sb.AppendLine($"      {{ \"type\": \"{EscapeJson(c.TypeName)}\", \"count\": {c.Count} }}{comma}");
+                    sb.AppendLine("    \"componentDistribution\": [");
+                    for (int i = 0; i < meaningful.Length; i++)
+                    {
+                        var c = meaningful[i];
+                        string comma = i < meaningful.Length - 1 ? "," : "";
+                        sb.AppendLine($"      {{ \"type\": \"{EscapeJson(c.TypeName)}\", \"count\": {c.Count} }}{comma}");
+                    }
+                    sb.AppendLine("    ],");
                 }
-                sb.AppendLine("    ],");
             }
 
             sb.AppendLine("    \"lights\": {");
@@ -1000,6 +1018,16 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             sb.AppendLine($"    \"rigidbodyCount\": {census.RigidbodyCount},");
             sb.AppendLine($"    \"rigidbody2DCount\": {census.Rigidbody2DCount}");
             sb.AppendLine("  },");
+        }
+
+        private static readonly HashSet<string> TrivialComponents = new HashSet<string>
+        {
+            "Transform", "RectTransform", "CanvasRenderer", "GameObject"
+        };
+
+        private static bool IsTrivialComponent(string typeName)
+        {
+            return TrivialComponents.Contains(typeName);
         }
 
         private static float Percentile(float[] sorted, float p)

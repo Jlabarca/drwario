@@ -124,12 +124,23 @@ namespace DrWario.Editor
                         names.Add(mb.gameObject.name);
                 }
 
-                // Sort by instance count descending, take top 30
+                // Track namespaces per type
+                var namespaces = new Dictionary<string, string>();
+                foreach (var mb in allBehaviours)
+                {
+                    if (mb == null || !mb.enabled) continue;
+                    string typeName = mb.GetType().Name;
+                    if (!namespaces.ContainsKey(typeName))
+                        namespaces[typeName] = mb.GetType().Namespace;
+                }
+
                 foreach (var kv in counts.OrderByDescending(kv => kv.Value).Take(30))
                 {
+                    namespaces.TryGetValue(kv.Key, out string ns);
                     result.Add(new ActiveScriptEntry
                     {
                         TypeName = kv.Key,
+                        Namespace = string.IsNullOrEmpty(ns) ? null : ns,
                         InstanceCount = kv.Value,
                         SampleGameObjectNames = sampleNames[kv.Key].ToArray()
                     });
