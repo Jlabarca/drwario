@@ -68,7 +68,7 @@ namespace DrWario.Editor.UI
             {
                 fixedItemHeight = 20,
                 itemsSource = data as System.Collections.IList,
-                sortingMode = ColumnSortingMode.Default
+                sortingEnabled = true
             };
             listView.style.height = height;
             listView.style.flexGrow = 1;
