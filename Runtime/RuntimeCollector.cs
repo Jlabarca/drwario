@@ -303,7 +303,7 @@ namespace DrWario.Runtime
                 {
                     Timestamp = Time.realtimeSinceStartup,
                     DeltaTime = Time.unscaledDeltaTime,
-                    CpuFrameTimeMs = (cpuMs > 0 ? cpuMs : Time.unscaledDeltaTime * 1000f) - selfOverheadMs,
+                    CpuFrameTimeMs = Math.Max(0f, (cpuMs > 0 ? cpuMs : Time.unscaledDeltaTime * 1000f) - selfOverheadMs),
                     GpuFrameTimeMs = gpuMs,
                     RenderThreadMs = renderMs,
                     GcAllocBytes = gcAllocBytes,

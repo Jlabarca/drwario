@@ -211,6 +211,32 @@ If data is insufficient for a definitive answer, say so and suggest what additio
                 sb.AppendLine();
             }
 
+            // Compact profiling summary so LLM can correlate suspects with perf data
+            if (session != null && session.FrameCount > 0)
+            {
+                var frames = session.GetFrames();
+                if (frames.Length > 0)
+                {
+                    var cpuTimes = frames.Select(f => f.CpuFrameTimeMs).OrderBy(t => t).ToArray();
+                    var gcAllocs = frames.Select(f => f.GcAllocBytes).ToArray();
+                    float targetMs = session.Metadata.TargetFrameRate > 0
+                        ? 1000f / session.Metadata.TargetFrameRate : 16.67f;
+
+                    sb.AppendLine("=== PROFILING SUMMARY ===");
+                    sb.AppendLine($"  Frames: {frames.Length} | Target: {targetMs:F1}ms ({session.Metadata.TargetFrameRate}fps)");
+                    sb.AppendLine($"  CPU: avg={cpuTimes.Average():F1}ms, p95={Percentile(cpuTimes, 0.95f):F1}ms, p99={Percentile(cpuTimes, 0.99f):F1}ms, max={cpuTimes.Max():F1}ms");
+                    sb.AppendLine($"  Frame drops: {cpuTimes.Count(t => t > targetMs)} (>{targetMs:F0}ms) | Severe: {cpuTimes.Count(t => t > 50f)} (>50ms)");
+                    sb.AppendLine($"  GC: avg={gcAllocs.Average():F0}B/frame, spikes(>1KB)={gcAllocs.Count(a => a > 1024)}");
+
+                    // Memory trajectory (first and last heap)
+                    long firstHeap = frames[0].TotalHeapBytes;
+                    long lastHeap = frames[frames.Length - 1].TotalHeapBytes;
+                    float heapGrowthMB = (lastHeap - firstHeap) / (1024f * 1024f);
+                    sb.AppendLine($"  Heap: {firstHeap / (1024 * 1024)}MB → {lastHeap / (1024 * 1024)}MB (Δ{heapGrowthMB:+0.0;-0.0;0.0}MB)");
+                    sb.AppendLine();
+                }
+            }
+
             sb.AppendLine("Focus on the top suspects — scripts with many instances and scripts mentioned in console errors. Report what you find and suggest concrete fixes.");
 
             return sb.ToString();

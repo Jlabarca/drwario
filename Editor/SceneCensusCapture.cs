@@ -104,8 +104,12 @@ namespace DrWario.Editor
                     if (mb == null || !mb.enabled) continue;
                     string typeName = mb.GetType().Name;
 
-                    // Skip Unity internals and DrWario's own components
+                    // Skip Unity internals, built-in UI, and DrWario's own components
+                    string ns = mb.GetType().Namespace ?? "";
                     if (typeName.StartsWith("DrWario") || typeName == "RuntimeCollector")
+                        continue;
+                    if (ns.StartsWith("UnityEngine") || ns.StartsWith("Unity.") ||
+                        ns.StartsWith("TMPro") || ns.StartsWith("UnityEditor"))
                         continue;
 
                     counts.TryGetValue(typeName, out int c);
