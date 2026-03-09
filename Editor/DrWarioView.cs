@@ -1810,6 +1810,58 @@ namespace DrWario.Editor
 
             _askContainer.Add(btnRow);
 
+            // MCP Workflow prompts
+            var mcpCard = new VisualElement();
+            mcpCard.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.22f));
+            mcpCard.style.marginBottom = 10;
+            mcpCard.style.paddingTop = 8;
+            mcpCard.style.paddingBottom = 8;
+            mcpCard.style.paddingLeft = 10;
+            mcpCard.style.paddingRight = 10;
+            mcpCard.style.borderLeftWidth = 3;
+            mcpCard.style.borderLeftColor = new Color(0.6f, 0.4f, 0.9f);
+
+            mcpCard.Add(new Label("Copy Prompt Workflows")
+                { style = { unityFontStyleAndWeight = FontStyle.Bold, fontSize = 12, marginBottom = 2 } });
+            mcpCard.Add(new Label("Generate specialized prompts for LLM workflows. Paste into Claude/ChatGPT with MCP access.")
+                { style = { fontSize = 10, color = new Color(0.5f, 0.5f, 0.5f), marginBottom = 6, whiteSpace = WhiteSpace.Normal } });
+
+            var mcpBtnRow1 = new VisualElement();
+            mcpBtnRow1.style.flexDirection = FlexDirection.Row;
+            mcpBtnRow1.style.marginBottom = 4;
+
+            var suspectBtn = new Button(OnCopyMcpSuspectPrompt) { text = "Copy MCP Suspect Check" };
+            suspectBtn.style.height = 24;
+            suspectBtn.style.fontSize = 11;
+            suspectBtn.style.flexGrow = 1;
+            suspectBtn.style.backgroundColor = new StyleColor(new Color(0.25f, 0.2f, 0.4f));
+            suspectBtn.tooltip = "Copy a prompt that asks the LLM to use UnityMCP tools to inspect suspects (active scripts, console errors) and confirm/deny findings";
+            mcpBtnRow1.Add(suspectBtn);
+
+            var correctionBtn = new Button(OnCopyReportCorrectionPrompt) { text = "Copy Report Correction" };
+            correctionBtn.style.height = 24;
+            correctionBtn.style.fontSize = 11;
+            correctionBtn.style.flexGrow = 1;
+            correctionBtn.style.backgroundColor = new StyleColor(new Color(0.2f, 0.3f, 0.4f));
+            correctionBtn.tooltip = "Copy a prompt that asks the LLM to audit each finding, flag false positives, and suggest missed issues";
+            mcpBtnRow1.Add(correctionBtn);
+
+            mcpCard.Add(mcpBtnRow1);
+
+            var mcpBtnRow2 = new VisualElement();
+            mcpBtnRow2.style.flexDirection = FlexDirection.Row;
+
+            var combinedBtn = new Button(OnCopyMcpReportCorrectionPrompt) { text = "Copy MCP + Report Correction (Full)" };
+            combinedBtn.style.height = 24;
+            combinedBtn.style.fontSize = 11;
+            combinedBtn.style.flexGrow = 1;
+            combinedBtn.style.backgroundColor = new StyleColor(new Color(0.3f, 0.2f, 0.35f));
+            combinedBtn.tooltip = "Copy a combined prompt: inspect suspects with MCP tools, then produce a corrected report with evidence";
+            mcpBtnRow2.Add(combinedBtn);
+
+            mcpCard.Add(mcpBtnRow2);
+            _askContainer.Add(mcpCard);
+
             // Example questions
             var examplesCard = new VisualElement();
             examplesCard.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.22f));
@@ -1937,6 +1989,51 @@ namespace DrWario.Editor
             Debug.Log($"[DrWario] Prompt for \"{question}\" copied to clipboard ({prompt.Length} chars).");
             _statusLabel.text = $"Prompt copied ({prompt.Length} chars). Paste into any LLM chat.";
             _statusLabel.style.color = new Color(0.4f, 0.8f, 0.4f);
+        }
+
+        private void OnCopyMcpSuspectPrompt()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || _lastReport == null)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Run an analysis first to generate suspects.", "OK");
+                return;
+            }
+            string prompt = LLMPromptBuilder.BuildMcpSuspectCheckPrompt(session, _lastReport);
+            EditorGUIUtility.systemCopyBuffer = prompt;
+            Debug.Log($"[DrWario] MCP suspect check prompt copied ({prompt.Length} chars).");
+            _statusLabel.text = $"MCP suspect prompt copied ({prompt.Length} chars). Paste into LLM with MCP access.";
+            _statusLabel.style.color = new Color(0.6f, 0.4f, 0.9f);
+        }
+
+        private void OnCopyReportCorrectionPrompt()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (_lastReport == null)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Run an analysis first.", "OK");
+                return;
+            }
+            string prompt = LLMPromptBuilder.BuildReportCorrectionPrompt(session, _lastReport);
+            EditorGUIUtility.systemCopyBuffer = prompt;
+            Debug.Log($"[DrWario] Report correction prompt copied ({prompt.Length} chars).");
+            _statusLabel.text = $"Report correction prompt copied ({prompt.Length} chars). Paste into any LLM.";
+            _statusLabel.style.color = new Color(0.4f, 0.7f, 0.9f);
+        }
+
+        private void OnCopyMcpReportCorrectionPrompt()
+        {
+            var session = RuntimeCollector.ActiveSession;
+            if (session == null || _lastReport == null)
+            {
+                EditorUtility.DisplayDialog("DrWario", "Run an analysis first.", "OK");
+                return;
+            }
+            string prompt = LLMPromptBuilder.BuildMcpReportCorrectionPrompt(session, _lastReport);
+            EditorGUIUtility.systemCopyBuffer = prompt;
+            Debug.Log($"[DrWario] MCP + report correction prompt copied ({prompt.Length} chars).");
+            _statusLabel.text = $"Full MCP + correction prompt copied ({prompt.Length} chars). Paste into LLM with MCP access.";
+            _statusLabel.style.color = new Color(0.6f, 0.4f, 0.9f);
         }
 
         private async void OnAskDoctor()

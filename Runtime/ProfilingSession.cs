@@ -19,11 +19,17 @@ namespace DrWario.Runtime
         private const int MaxSnapshots = 100;
         private readonly HashSet<int> _drwarioCaptureFrames = new();
 
+        private List<ActiveScriptEntry> _activeScripts;
+        private List<ConsoleLogEntry> _consoleLogs;
+        private const int MaxConsoleLogs = 50;
+
         public SessionMetadata Metadata;
         public SceneCensus SceneCensus;
         public bool IsRecording { get; private set; }
         public bool ProfilerWasRecording { get; set; }
         public IReadOnlyList<ProfilerMarkerSample> ProfilerMarkers => _profilerMarkers;
+        public IReadOnlyList<ActiveScriptEntry> ActiveScripts => _activeScripts;
+        public IReadOnlyList<ConsoleLogEntry> ConsoleLogs => _consoleLogs;
 
         public int FrameCount => _frameCount;
         public int Capacity => _frameBuffer.Length;
@@ -166,5 +172,18 @@ namespace DrWario.Runtime
         public IReadOnlyList<BootStageTiming> BootStages => _bootStages;
         public IReadOnlyList<AssetLoadTiming> AssetLoads => _assetLoads;
         public IReadOnlyList<NetworkEvent> NetworkEvents => _networkEvents;
+
+        public void SetActiveScripts(List<ActiveScriptEntry> scripts)
+        {
+            _activeScripts = scripts;
+        }
+
+        public void RecordConsoleLog(ConsoleLogEntry entry)
+        {
+            if (_consoleLogs == null)
+                _consoleLogs = new List<ConsoleLogEntry>();
+            if (_consoleLogs.Count < MaxConsoleLogs)
+                _consoleLogs.Add(entry);
+        }
     }
 }

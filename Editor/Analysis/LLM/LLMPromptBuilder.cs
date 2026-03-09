@@ -57,6 +57,10 @@ When scene census data is provided (sceneCensus), consider scene composition in 
 
 When profilerMarkers data is available, reference specific marker names in your findings rather than guessing which subsystem is expensive. Use the marker timing data to attribute frame budget usage.
 
+When activeScripts data is available, use it to identify specific scripts as suspects. For example, if GC spikes correlate with a script that has many instances, name it as a likely cause. The ""on"" field shows sample GameObjects running that script. Reference specific script names in your scriptPath field when you can identify them.
+
+When consoleLogs data is available (errors/warnings captured during profiling), correlate them with performance findings. Errors during frame spikes are especially relevant — they may indicate the root cause.
+
 Return ONLY a JSON array of findings. No markdown, no preamble, no explanation outside the JSON.";
 
         private const string AskDoctorSystemPrompt = @"You are DrWario, an expert Unity runtime performance consultant.
@@ -149,6 +153,210 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Builds a prompt for an LLM with UnityMCP access to inspect suspects identified by DrWario.
+        /// The LLM should use MCP tools to check GameObjects, components, and scripts.
+        /// </summary>
+        public static string BuildMcpSuspectCheckPrompt(ProfilingSession session, DiagnosticReport report)
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("You have access to Unity Editor via MCP tools. DrWario has identified performance suspects that need verification.");
+            sb.AppendLine();
+            sb.AppendLine("YOUR TASK: Use UnityMCP tools to inspect each suspect below. For each one:");
+            sb.AppendLine("1. Use find_gameobjects to locate the suspect GameObjects");
+            sb.AppendLine("2. Use manage_gameobject(action=\"get_components\") to inspect their components");
+            sb.AppendLine("3. Use manage_script to read the relevant scripts if needed");
+            sb.AppendLine("4. Confirm or deny whether each suspect is likely causing the reported issue");
+            sb.AppendLine("5. Suggest specific fixes based on what you find in the actual code/components");
+            sb.AppendLine();
+
+            // Active scripts as suspects
+            if (session?.ActiveScripts != null && session.ActiveScripts.Count > 0)
+            {
+                sb.AppendLine("=== ACTIVE SCRIPTS (by instance count) ===");
+                foreach (var s in session.ActiveScripts)
+                {
+                    string names = string.Join(", ", s.SampleGameObjectNames ?? Array.Empty<string>());
+                    sb.AppendLine($"  {s.TypeName} x{s.InstanceCount} — on: {names}");
+                }
+                sb.AppendLine();
+            }
+
+            // Findings as context for what to investigate
+            if (report?.Findings != null && report.Findings.Count > 0)
+            {
+                sb.AppendLine("=== DRWARIO FINDINGS (what to investigate) ===");
+                foreach (var f in report.Findings.OrderByDescending(f => f.Severity))
+                {
+                    sb.AppendLine($"  [{f.Severity}] {f.Title}");
+                    sb.AppendLine($"    {f.Description}");
+                    if (f.AffectedFrames != null && f.AffectedFrames.Length > 0)
+                        sb.AppendLine($"    Affected frames: {string.Join(", ", f.AffectedFrames.Take(10))}");
+                    sb.AppendLine();
+                }
+            }
+
+            // Console errors as additional clues
+            if (session?.ConsoleLogs != null && session.ConsoleLogs.Count > 0)
+            {
+                sb.AppendLine("=== CONSOLE ERRORS/WARNINGS DURING SESSION ===");
+                foreach (var l in session.ConsoleLogs)
+                {
+                    sb.Append($"  [{l.LogType}] {l.Message}");
+                    if (!string.IsNullOrEmpty(l.StackTraceHint))
+                        sb.Append($" — {l.StackTraceHint}");
+                    sb.AppendLine();
+                }
+                sb.AppendLine();
+            }
+
+            sb.AppendLine("Focus on the top suspects — scripts with many instances and scripts mentioned in console errors. Report what you find and suggest concrete fixes.");
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Builds a prompt asking the LLM to verify and correct a DrWario report.
+        /// Includes full profiling data and findings for the LLM to audit.
+        /// </summary>
+        public static string BuildReportCorrectionPrompt(ProfilingSession session, DiagnosticReport report)
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("DrWario generated the following performance analysis report. Your task is to AUDIT and CORRECT it.");
+            sb.AppendLine();
+            sb.AppendLine("For each finding, evaluate:");
+            sb.AppendLine("1. Is this finding accurate based on the profiling data? (Confirm / Likely False Positive / Needs More Data)");
+            sb.AppendLine("2. Is the severity appropriate? (Correct / Should be higher / Should be lower)");
+            sb.AppendLine("3. Is the recommendation actionable and correct? (Correct / Improve recommendation)");
+            sb.AppendLine("4. Are there missed issues in the data that DrWario didn't flag?");
+            sb.AppendLine();
+
+            // Include profiling data
+            if (session != null && session.FrameCount > 0)
+            {
+                var findings = report?.Findings ?? new List<DiagnosticFinding>();
+                sb.AppendLine("=== PROFILING DATA ===");
+                sb.AppendLine(BuildUserPrompt(session, findings));
+                sb.AppendLine();
+            }
+
+            // Include the full report
+            if (report != null)
+            {
+                sb.AppendLine("=== DRWARIO REPORT TO AUDIT ===");
+                sb.AppendLine($"Overall Grade: {report.OverallGrade} | Health Score: {report.HealthScore:F0}/100");
+
+                foreach (var kv in report.CategoryGrades)
+                    sb.AppendLine($"  [{kv.Value}] {kv.Key}");
+                sb.AppendLine();
+
+                sb.AppendLine("Findings:");
+                int n = 1;
+                foreach (var f in report.Findings.OrderByDescending(f => f.Severity))
+                {
+                    string confTag = f.Confidence != Confidence.High ? $" [Confidence: {f.Confidence}]" : "";
+                    sb.AppendLine($"  #{n} [{f.Severity}]{confTag} {f.Title}");
+                    sb.AppendLine($"     {f.Description}");
+                    sb.AppendLine($"     Recommendation: {f.Recommendation}");
+                    if (!string.IsNullOrEmpty(f.EnvironmentNote))
+                        sb.AppendLine($"     Note: {f.EnvironmentNote}");
+                    sb.AppendLine();
+                    n++;
+                }
+            }
+
+            sb.AppendLine("Output a corrected report: for each finding, state your verdict (Confirmed / False Positive / Adjusted). Add any missed findings. Provide a corrected overall assessment.");
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Builds a combined prompt: use UnityMCP to inspect suspects AND correct the report.
+        /// </summary>
+        public static string BuildMcpReportCorrectionPrompt(ProfilingSession session, DiagnosticReport report)
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("You have access to Unity Editor via MCP tools. DrWario generated a performance report with suspects.");
+            sb.AppendLine();
+            sb.AppendLine("YOUR TASK (two phases):");
+            sb.AppendLine();
+            sb.AppendLine("PHASE 1 — INVESTIGATE SUSPECTS:");
+            sb.AppendLine("Use UnityMCP tools to inspect the suspects identified below:");
+            sb.AppendLine("- find_gameobjects to locate suspect GameObjects");
+            sb.AppendLine("- manage_gameobject(action=\"get_components\") to inspect their components");
+            sb.AppendLine("- manage_script to read relevant scripts for code-level analysis");
+            sb.AppendLine("- manage_scene(action=\"get_hierarchy\") if you need to understand the scene structure");
+            sb.AppendLine();
+            sb.AppendLine("PHASE 2 — CORRECT THE REPORT:");
+            sb.AppendLine("Based on what you found, for each DrWario finding:");
+            sb.AppendLine("1. Confirm or deny the finding with evidence from your inspection");
+            sb.AppendLine("2. Adjust severity if needed");
+            sb.AppendLine("3. Improve recommendations with specific code/component changes");
+            sb.AppendLine("4. Add any new findings you discovered that DrWario missed");
+            sb.AppendLine();
+
+            // Active scripts
+            if (session?.ActiveScripts != null && session.ActiveScripts.Count > 0)
+            {
+                sb.AppendLine("=== ACTIVE SCRIPTS (suspects) ===");
+                foreach (var s in session.ActiveScripts)
+                {
+                    string names = string.Join(", ", s.SampleGameObjectNames ?? Array.Empty<string>());
+                    sb.AppendLine($"  {s.TypeName} x{s.InstanceCount} — on: {names}");
+                }
+                sb.AppendLine();
+            }
+
+            // Console errors
+            if (session?.ConsoleLogs != null && session.ConsoleLogs.Count > 0)
+            {
+                sb.AppendLine("=== CONSOLE ERRORS/WARNINGS ===");
+                foreach (var l in session.ConsoleLogs)
+                {
+                    sb.Append($"  [{l.LogType}] {l.Message}");
+                    if (!string.IsNullOrEmpty(l.StackTraceHint))
+                        sb.Append($" — {l.StackTraceHint}");
+                    sb.AppendLine();
+                }
+                sb.AppendLine();
+            }
+
+            // Profiling data
+            if (session != null && session.FrameCount > 0)
+            {
+                var findings = report?.Findings ?? new List<DiagnosticFinding>();
+                sb.AppendLine("=== PROFILING DATA ===");
+                sb.AppendLine(BuildUserPrompt(session, findings));
+                sb.AppendLine();
+            }
+
+            // Report to correct
+            if (report?.Findings != null && report.Findings.Count > 0)
+            {
+                sb.AppendLine("=== DRWARIO REPORT TO VERIFY & CORRECT ===");
+                sb.AppendLine($"Overall Grade: {report.OverallGrade} | Health Score: {report.HealthScore:F0}/100");
+                sb.AppendLine();
+
+                int n = 1;
+                foreach (var f in report.Findings.OrderByDescending(f => f.Severity))
+                {
+                    string confTag = f.Confidence != Confidence.High ? $" [Confidence: {f.Confidence}]" : "";
+                    sb.AppendLine($"  #{n} [{f.Severity}]{confTag} {f.Title}");
+                    sb.AppendLine($"     {f.Description}");
+                    sb.AppendLine($"     Recommendation: {f.Recommendation}");
+                    sb.AppendLine();
+                    n++;
+                }
+            }
+
+            sb.AppendLine("Start by investigating the top suspects with MCP tools, then produce a corrected report.");
+
+            return sb.ToString();
+        }
+
         public static string BuildUserPrompt(ProfilingSession session, List<DiagnosticFinding> ruleFindings)
         {
             var sb = new StringBuilder();
@@ -192,6 +400,12 @@ If data is insufficient for a definitive answer, say so and suggest what additio
 
             // Scene snapshot diffs (object churn during session)
             AppendSceneSnapshots(sb, session);
+
+            // Active scripts (suspect identification)
+            AppendActiveScripts(sb, session);
+
+            // Console logs (errors/warnings during session)
+            AppendConsoleLogs(sb, session);
 
             // Pre-analysis (rule-based findings)
             AppendPreAnalysis(sb, ruleFindings);
@@ -610,6 +824,40 @@ If data is insufficient for a definitive answer, say so and suggest what additio
             }
 
             sb.AppendLine("  },");
+        }
+
+        private static void AppendActiveScripts(StringBuilder sb, ProfilingSession session)
+        {
+            var scripts = session.ActiveScripts;
+            if (scripts == null || scripts.Count == 0) return;
+
+            sb.AppendLine("  \"activeScripts\": [");
+            for (int i = 0; i < scripts.Count; i++)
+            {
+                var s = scripts[i];
+                string names = string.Join(", ", s.SampleGameObjectNames ?? Array.Empty<string>());
+                string comma = i < scripts.Count - 1 ? "," : "";
+                sb.AppendLine($"    {{ \"type\": \"{EscapeJson(s.TypeName)}\", \"instances\": {s.InstanceCount}, \"on\": \"{EscapeJson(names)}\" }}{comma}");
+            }
+            sb.AppendLine("  ],");
+        }
+
+        private static void AppendConsoleLogs(StringBuilder sb, ProfilingSession session)
+        {
+            var logs = session.ConsoleLogs;
+            if (logs == null || logs.Count == 0) return;
+
+            sb.AppendLine("  \"consoleLogs\": [");
+            for (int i = 0; i < logs.Count; i++)
+            {
+                var l = logs[i];
+                string comma = i < logs.Count - 1 ? "," : "";
+                sb.Append($"    {{ \"type\": \"{l.LogType}\", \"msg\": \"{EscapeJson(l.Message)}\"");
+                if (!string.IsNullOrEmpty(l.StackTraceHint))
+                    sb.Append($", \"src\": \"{EscapeJson(l.StackTraceHint)}\"");
+                sb.AppendLine($" }}{comma}");
+            }
+            sb.AppendLine("  ],");
         }
 
         private static void AppendPreAnalysis(StringBuilder sb, List<DiagnosticFinding> findings)

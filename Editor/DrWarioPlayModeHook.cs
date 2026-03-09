@@ -13,6 +13,7 @@ namespace DrWario.Editor
     {
         private const string PrefKey = "DrWario_AutoStart";
         private static SceneSnapshotTracker _snapshotTracker;
+        private static ProfilingSession _logTargetSession;
 
         public static bool AutoStartEnabled
         {
@@ -41,8 +42,9 @@ namespace DrWario.Editor
                     break;
 
                 case PlayModeStateChange.ExitingPlayMode:
-                    // Always clean up snapshot tracker (runs for both manual and auto sessions)
+                    // Always clean up snapshot tracker and console log capture
                     RuntimeCollector.OnFrameSampled -= OnFrameSampled;
+                    StopConsoleLogCapture();
                     _snapshotTracker?.StopSession();
                     _snapshotTracker = null;
 
@@ -96,6 +98,15 @@ namespace DrWario.Editor
                           $"{session.SceneCensus.DirectionalLights + session.SceneCensus.PointLights + session.SceneCensus.SpotLights + session.SceneCensus.AreaLights} lights");
             }
 
+            // Capture active MonoBehaviour scripts for suspect identification
+            var activeScripts = SceneCensusCapture.CaptureActiveScripts();
+            session.SetActiveScripts(activeScripts);
+            if (activeScripts.Count > 0)
+                Debug.Log($"[DrWario] Active scripts captured: {activeScripts.Count} types");
+
+            // Start console log capture for error/warning context
+            StartConsoleLogCapture(session);
+
             // Start scene snapshot tracker for hierarchy diff tracking
             _snapshotTracker?.StopSession();
             _snapshotTracker = new SceneSnapshotTracker();
@@ -113,6 +124,48 @@ namespace DrWario.Editor
                 Debug.LogWarning("[DrWario] No editor baseline available. Analysis will use unadjusted thresholds. " +
                                  "Baseline is captured on editor startup — try restarting the editor if this persists.");
             }
+        }
+
+        private static void StartConsoleLogCapture(ProfilingSession session)
+        {
+            StopConsoleLogCapture();
+            _logTargetSession = session;
+            Application.logMessageReceived += OnConsoleLog;
+        }
+
+        private static void StopConsoleLogCapture()
+        {
+            Application.logMessageReceived -= OnConsoleLog;
+            _logTargetSession = null;
+        }
+
+        private static void OnConsoleLog(string message, string stackTrace, LogType type)
+        {
+            if (_logTargetSession == null || !_logTargetSession.IsRecording) return;
+
+            // Only capture errors and warnings — skip DrWario's own logs and verbose Log messages
+            if (type != LogType.Error && type != LogType.Warning && type != LogType.Exception)
+                return;
+            if (message.StartsWith("[DrWario]")) return;
+
+            // Extract first meaningful line from stack trace as hint (script name)
+            string stackHint = "";
+            if (!string.IsNullOrEmpty(stackTrace))
+            {
+                var firstLine = stackTrace.Split('\n')[0].Trim();
+                // Keep just the method signature, trim path info for brevity
+                if (firstLine.Length > 80)
+                    firstLine = firstLine.Substring(0, 80);
+                stackHint = firstLine;
+            }
+
+            _logTargetSession.RecordConsoleLog(new ConsoleLogEntry
+            {
+                Timestamp = Time.realtimeSinceStartup,
+                Message = message.Length > 150 ? message.Substring(0, 150) : message,
+                LogType = type.ToString(),
+                StackTraceHint = stackHint
+            });
         }
     }
 }

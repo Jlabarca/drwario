@@ -82,6 +82,62 @@ namespace DrWario.Editor
 
             return census;
         }
+
+        /// <summary>
+        /// Captures active MonoBehaviour types with instance counts and sample GameObject names.
+        /// Called once at session start alongside the scene census.
+        /// Returns top 30 script types by instance count.
+        /// </summary>
+        public static List<ActiveScriptEntry> CaptureActiveScripts()
+        {
+            var result = new List<ActiveScriptEntry>();
+            try
+            {
+                var allBehaviours = Object.FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None);
+
+                // Group by type: track count + sample GameObject names
+                var counts = new Dictionary<string, int>();
+                var sampleNames = new Dictionary<string, List<string>>();
+
+                foreach (var mb in allBehaviours)
+                {
+                    if (mb == null || !mb.enabled) continue;
+                    string typeName = mb.GetType().Name;
+
+                    // Skip Unity internals and DrWario's own components
+                    if (typeName.StartsWith("DrWario") || typeName == "RuntimeCollector")
+                        continue;
+
+                    counts.TryGetValue(typeName, out int c);
+                    counts[typeName] = c + 1;
+
+                    if (!sampleNames.TryGetValue(typeName, out var names))
+                    {
+                        names = new List<string>();
+                        sampleNames[typeName] = names;
+                    }
+                    if (names.Count < 3)
+                        names.Add(mb.gameObject.name);
+                }
+
+                // Sort by instance count descending, take top 30
+                foreach (var kv in counts.OrderByDescending(kv => kv.Value).Take(30))
+                {
+                    result.Add(new ActiveScriptEntry
+                    {
+                        TypeName = kv.Key,
+                        InstanceCount = kv.Value,
+                        SampleGameObjectNames = sampleNames[kv.Key].ToArray()
+                    });
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[DrWario] Active scripts capture failed: {e.Message}");
+            }
+
+            return result;
+        }
     }
 }
 #endif

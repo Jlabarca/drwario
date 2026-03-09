@@ -2,108 +2,186 @@
 
 > Deep architecture and implementation details for contributors and integrators.
 
+## Architecture Evolution
+
+DrWario's architecture has gone through two major iterations. Understanding the evolution explains why the current design exists.
+
+### v1.0 — AI-Dependent Pipeline (Legacy)
+
+The original architecture treated AI as a core part of the analysis pipeline:
+
+```
+AnalysisEngine (v1.0 — LEGACY)
+  ├── Phase 1: 6 deterministic rules → findings
+  ├── Phase 2: AIAnalysisRule → more findings (blocked editor 10-30s)
+  └── Phase 3: Deduplicate (AI priority) → grade → report
+```
+
+**Limitations that drove the redesign:**
+- Reports felt incomplete without AI — rules found symptoms but couldn't explain root causes or prioritize
+- AI ran synchronously via `Task.Wait()`, freezing the editor
+- No correlation detection — if GC spikes and frame drops coincided, only AI could spot it
+- Basic sampling — raw `Profiler.GetTotalAllocatedMemoryLong()` deltas, no rendering/physics/audio counters
+- Editor overhead (Scene view, Inspector) inflated all measurements with no adjustment
+- No scene awareness — zero knowledge of what GameObjects existed during profiling
+- DrWario's own overhead was measured as part of the game's performance
+
+### v2.0 — Self-Sufficient Pipeline (Current)
+
+The redesign makes the deterministic report complete and standalone. AI is an optional enhancement layer triggered on demand.
+
+```
+AnalysisEngine (v2.0 — CURRENT)
+  ├── Phase 1: 8 deterministic rules (skip disabled rules)
+  ├── Phase 2: CorrelationEngine — 8 cross-cutting pattern detectors
+  ├── Phase 3: ComputeGrades — A-F per category + overall
+  ├── Phase 4: ReportSynthesizer — executive summary, bottleneck ID, prioritized actions
+  └── (User clicks "Enhance with AI")
+       └── EnhanceWithAI[Streaming]Async — SSE streaming, adds findings, re-grades
+```
+
+**Key design decisions:**
+1. **Correlation replaces ~60-70% of AI's role** — GC↔frame drops, asset loads↔GC, memory leaks↔allocation patterns, GPU bottlenecks are detected deterministically
+2. **Synthesis provides the "so what"** — Executive summary, bottleneck identification, and prioritized action list without needing AI
+3. **AI adds unique value** — Platform-specific advice, Unity version quirks, natural language explanation, non-obvious patterns the correlation engine can't detect
+4. **Editor baseline** — Pre-Play Mode measurement of idle editor overhead enables threshold adjustment and confidence scoring
+5. **Self-overhead subtraction** — DrWario's own ProfilerMarker time is subtracted from CPU measurements; capture frames are excluded from GC analysis
+
+---
+
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Unity Editor                          │
-│                                                          │
-│  DrWarioWindow ─── DrWarioView (6 tabs)                  │
-│                        │                                 │
-│                   AnalysisEngine                         │
-│                   ┌────┴────┐                            │
-│                   │         │                            │
-│            Phase 1: Rules   Phase 2: AI                  │
-│            ┌──────┴──────┐  ┌──────┴──────┐              │
-│            │GCAllocation │  │AIAnalysisRule│              │
-│            │FrameDrop    │  │  ├─ LLMPromptBuilder       │
-│            │BootStage    │  │  ├─ LLMClient              │
-│            │MemoryLeak   │  │  └─ LLMResponseParser      │
-│            │AssetLoad    │  └─────────────┘              │
-│            │NetworkLat.  │                               │
-│            └─────────────┘                               │
-│                   │                                      │
-│            Phase 3: Deduplicate + Grade                  │
-│                   │                                      │
-│            DiagnosticReport ──── ReportHistory            │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│                    Runtime                               │
-│                                                          │
-│  RuntimeCollector (MonoBehaviour singleton)               │
-│       │                                                  │
-│       └── ProfilingSession (ring buffer 3600)            │
-│            ├── FrameSample[3600]                          │
-│            ├── List<BootStageTiming>                      │
-│            ├── List<AssetLoadTiming>                      │
-│            └── List<NetworkEvent>                         │
-│                                                          │
-│  BootTimingHook (static callback facade)                 │
-│                                                          │
-│  #if UNITY_EDITOR || DEVELOPMENT_BUILD                   │
-└──────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                         Unity Editor                              │
+│                                                                   │
+│  DrWarioWindow ─── DrWarioView (6 tabs)                           │
+│                        │                                          │
+│                   AnalysisEngine                                  │
+│                   ┌────┴────────────────────────┐                 │
+│                   │                              │                │
+│            Phase 1: 8 Rules              Phase 2: Correlations    │
+│            ┌──────┴──────────┐           ┌──────┴──────┐          │
+│            │ GCAllocation    │           │CorrelationEngine       │
+│            │ FrameDrop       │           │ (8 patterns)  │        │
+│            │ BootStage       │           └──────┬──────┘          │
+│            │ MemoryLeak      │                  │                 │
+│            │ AssetLoad       │           Phase 3: Grades          │
+│            │ NetworkLatency  │                  │                 │
+│            │ RenderingEff.   │           Phase 4: Synthesis       │
+│            │ CPUvsGPU        │           ┌──────┴──────┐          │
+│            └─────────────────┘           │ReportSynthesizer      │
+│                                          │ (standalone)  │        │
+│                   On-demand:             └──────────────┘          │
+│            ┌──────┴──────┐                                        │
+│            │AIAnalysisRule│ ← "Enhance with AI" button            │
+│            │ (SSE stream) │                                       │
+│            └──────────────┘                                       │
+│                                                                   │
+│  EditorBaselineCapture ─── SceneCensusCapture                     │
+│  SceneSnapshotTracker ──── DrWarioPlayModeHook                    │
+│                                                                   │
+├───────────────────────────────────────────────────────────────────┤
+│                         Runtime                                   │
+│                                                                   │
+│  RuntimeCollector (MonoBehaviour singleton)                        │
+│       ├── ProfilerBridge (ProfilerRecorder counters)               │
+│       ├── ProfilerMarker sampling (subsystem timing)              │
+│       ├── Self-overhead recorder (DrWario.Sample)                 │
+│       └── ProfilingSession (ring buffer 3600)                     │
+│            ├── FrameSample[3600] (28 fields per frame)            │
+│            ├── List<BootStageTiming>                               │
+│            ├── List<AssetLoadTiming>                               │
+│            ├── List<NetworkEvent>                                  │
+│            ├── List<ProfilerMarkerSample>                          │
+│            ├── List<SceneSnapshotDiff> (max 100)                  │
+│            └── HashSet<int> DrWarioCaptureFrames                  │
+│                                                                   │
+│  BootTimingHook (static callback facade)                          │
+│                                                                   │
+│  #if UNITY_EDITOR || DEVELOPMENT_BUILD                            │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Data Structures
 
-### FrameSample (struct, 48 bytes)
+### FrameSample (struct, 28 fields)
 
-| Field | Type | Bytes | Source |
-|-------|------|-------|--------|
-| `Timestamp` | float | 4 | `Time.realtimeSinceStartup` |
-| `DeltaTime` | float | 4 | `Time.unscaledDeltaTime` |
-| `CpuFrameTimeMs` | float | 4 | `FrameTimingManager` or `deltaTime * 1000` |
-| `GpuFrameTimeMs` | float | 4 | `FrameTimingManager` (0 on some platforms) |
-| `GcAllocBytes` | long | 8 | Delta of `Profiler.GetTotalAllocatedMemoryLong()` |
-| `TotalHeapBytes` | long | 8 | `Profiler.GetTotalAllocatedMemoryLong()` |
-| `TextureMemoryBytes` | long | 8 | `Profiler.GetAllocatedMemoryForGraphicsDriver()` |
-| `MeshMemoryBytes` | long | 8 | `TotalReservedMemory - TotalAllocated` (approx) |
+Captured every `Update()` frame by RuntimeCollector.
 
-### BootStageTiming (struct)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `StageName` | string | Name of the boot stage |
-| `DurationMs` | long | Stage duration in milliseconds |
-| `Success` | bool | Whether the stage completed successfully |
-
-### AssetLoadTiming (struct)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `AssetKey` | string | Asset identifier / path |
-| `DurationMs` | long | Load duration in milliseconds |
-| `SizeBytes` | long | Asset size (0 if unknown) |
-
-### NetworkEvent (struct)
-
-| Field | Type | Description |
-|-------|------|-------------|
+| Field | Type | Source |
+|-------|------|--------|
 | `Timestamp` | float | `Time.realtimeSinceStartup` |
-| `Type` | NetworkEventType | `Send`, `Receive`, or `Error` |
-| `Bytes` | int | Packet size |
-| `LatencyMs` | float | Round-trip for sends, 0 for receives |
+| `DeltaTime` | float | `Time.unscaledDeltaTime` |
+| `CpuFrameTimeMs` | float | ProfilerBridge or FrameTimingManager, minus DrWario.Sample overhead |
+| `GpuFrameTimeMs` | float | `FrameTimingManager` (0 on some platforms) |
+| `RenderThreadMs` | float | ProfilerBridge or 0 |
+| `GcAllocBytes` | long | ProfilerBridge GC.Alloc counter or heap delta |
+| `GcAllocCount` | int | ProfilerBridge GC allocation count or 0 |
+| `TotalHeapBytes` | long | ProfilerBridge TotalUsedMemory or `Profiler.GetTotalAllocatedMemoryLong()` |
+| `TextureMemoryBytes` | long | ProfilerBridge or `Profiler.GetAllocatedMemoryForGraphicsDriver()` |
+| `MeshMemoryBytes` | long | ProfilerBridge or `TotalReserved - TotalAllocated` |
+| `DrawCalls` | int | ProfilerRecorder |
+| `Batches` | int | ProfilerRecorder |
+| `SetPassCalls` | int | ProfilerRecorder |
+| `Triangles` | int | ProfilerRecorder |
+| `Vertices` | int | ProfilerRecorder |
+| `PhysicsActiveBodies` | int | ProfilerRecorder |
+| `PhysicsKinematicBodies` | int | ProfilerRecorder |
+| `PhysicsContacts` | int | ProfilerRecorder |
+| `AudioVoiceCount` | int | ProfilerRecorder |
+| `AudioDSPLoad` | float | ProfilerRecorder |
+| `AnimatorCount` | int | ProfilerRecorder |
+| `UICanvasRebuilds` | int | ProfilerRecorder |
+| `UILayoutRebuilds` | int | ProfilerRecorder |
+| `ObjectCount` | int | Periodic `FindObjectsByType` or SceneSnapshotTracker |
+| `NativeMemoryBytes` | long | `Profiler.GetTotalReservedMemoryLong()` |
+| `GcCollectionCount` | int | `GC.CollectionCount(0)` — cumulative |
+| `FrameNumber` | int | `Time.frameCount` — for Profiler frame navigation |
 
 ### SessionMetadata (struct)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `StartTime` | DateTime | UTC session start |
-| `EndTime` | DateTime | UTC session end |
+| `StartTime`, `EndTime` | DateTime | UTC session bounds |
 | `UnityVersion` | string | `Application.unityVersion` |
 | `Platform` | string | `Application.platform.ToString()` |
 | `TargetFrameRate` | int | `Application.targetFrameRate` |
-| `ScreenWidth` | int | `Screen.width` |
-| `ScreenHeight` | int | `Screen.height` |
+| `ScreenWidth`, `ScreenHeight` | int | `Screen.width/height` |
+| `IsEditor` | bool | `Application.isEditor` |
+| `IsDevelopmentBuild` | bool | `Debug.isDebugBuild` |
+| `Baseline` | EditorBaseline | Idle editor overhead (30 frames pre-Play) |
+| `SceneViewOpen` | bool | Scene view adds draw calls + rendering |
+| `InspectorOpen` | bool | Inspector adds GC from serialization |
+| `ProfilerOpen` | bool | Profiler has its own overhead |
+| `GameViewCount` | int | Multiple game views = multiple renders |
+
+### EditorBaseline (struct)
+
+Captured during idle editor (30 frames before Play Mode) by `EditorBaselineCapture`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `AvgCpuFrameTimeMs` | float | Editor idle CPU overhead |
+| `AvgRenderThreadMs` | float | Editor idle render thread |
+| `AvgGcAllocBytes` | long | Editor idle GC per frame |
+| `AvgGcAllocCount` | int | Editor idle allocation count |
+| `AvgDrawCalls` | int | Editor idle draw calls (Scene view, etc.) |
+| `AvgBatches` | int | Editor idle batches |
+| `AvgSetPassCalls` | int | Editor idle SetPass calls |
+| `AvgUICanvasRebuilds` | int | Editor idle UI canvas rebuilds |
+| `AvgUILayoutRebuilds` | int | Editor idle UI layout rebuilds |
+| `SampleCount` | int | Frames sampled (target: 30) |
+| `IsValid` | bool | True if baseline was captured |
 
 ### DiagnosticFinding (struct)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `RuleId` | string | Unique rule identifier (e.g., `GC_SPIKE`, `AI_CORR_01`) |
-| `Category` | string | `CPU`, `Memory`, `Boot`, `Assets`, `Network`, `General` |
+| `Category` | string | `CPU`, `Memory`, `Boot`, `Assets`, `Network`, `Rendering`, `General` |
 | `Severity` | Severity | `Info`, `Warning`, `Critical` |
 | `Title` | string | Short summary |
 | `Description` | string | Detailed explanation with data references |
@@ -111,6 +189,18 @@
 | `Metric` | float | The measured value |
 | `Threshold` | float | The reference threshold |
 | `FrameIndex` | int | Frame index (-1 if not frame-specific) |
+| `Confidence` | Confidence | `High`, `Medium`, `Low` — reliability of finding |
+| `EnvironmentNote` | string | Optional context about editor impact |
+| `AffectedFrames` | int[] | Frame indices where issue was detected (max 100) |
+
+### Scene Tracking Types
+
+| Struct | Fields | Purpose |
+|--------|--------|---------|
+| `SceneObjectEntry` | InstanceId, Name, ParentInstanceId, ComponentTypes[] | Single GameObject in a snapshot |
+| `SceneSnapshotDiff` | FrameIndex, Timestamp, TotalObjectCount, Added[], Removed[], Trigger | Diff between two snapshots |
+| `SceneCensus` | TotalGameObjects, TotalComponents, CanvasCount, DirectionalLights, etc. | Static scene analysis |
+| `ProfilerMarkerSample` | MarkerName, AvgInclusiveTimeNs, MaxInclusiveTimeNs, AvgCallCount, SampleCount | Subsystem timing |
 
 ---
 
@@ -118,11 +208,11 @@
 
 | Namespace | Contents |
 |-----------|----------|
-| `DrWario.Runtime` | FrameSample, ProfilingSession, RuntimeCollector, BootTimingHook, NetworkEventType, SessionMetadata |
-| `DrWario.Editor` | DrWarioView, DrWarioWindow, DrWarioPlayModeHook |
-| `DrWario.Editor.Analysis` | AnalysisEngine, DiagnosticReport, DiagnosticFinding, IAnalysisRule, ReportHistory, Severity |
-| `DrWario.Editor.Analysis.Rules` | GCAllocationRule, FrameDropRule, BootStageRule, MemoryLeakRule, AssetLoadRule, NetworkLatencyRule, AIAnalysisRule |
-| `DrWario.Editor.Analysis.LLM` | LLMConfig, LLMClient, LLMPromptBuilder, LLMResponseParser, LLMProvider, LLMResponse |
+| `DrWario.Runtime` | FrameSample, ProfilingSession, RuntimeCollector, ProfilerBridge, BootTimingHook, NetworkEventType, SessionMetadata, EditorBaseline, SceneObjectEntry, SceneSnapshotDiff, SceneCensus, ProfilerMarkerSample |
+| `DrWario.Editor` | DrWarioView, DrWarioWindow, DrWarioPlayModeHook, EditorBaselineCapture, SceneCensusCapture, SceneSnapshotTracker |
+| `DrWario.Editor.Analysis` | AnalysisEngine, DiagnosticReport, DiagnosticFinding, IAnalysisRule, IConfigurableRule, ReportHistory, Severity, Confidence, CorrelationEngine, ReportSynthesizer, RuleConfig |
+| `DrWario.Editor.Analysis.Rules` | GCAllocationRule, FrameDropRule, BootStageRule, MemoryLeakRule, AssetLoadRule, NetworkLatencyRule, RenderingEfficiencyRule, CPUvsGPUBottleneckRule, AIAnalysisRule |
+| `DrWario.Editor.Analysis.LLM` | LLMConfig, LLMClient, LLMPromptBuilder, LLMResponseParser, SseDownloadHandler, LLMProvider, LLMResponse |
 
 ---
 
@@ -131,7 +221,6 @@
 ### Ring Buffer (ProfilingSession)
 
 - **Capacity:** 3600 frames (~60s at 60fps)
-- **Memory:** ~168KB fixed allocation (3600 × 48 bytes)
 - **Write (O(1), zero allocation):**
 
 ```csharp
@@ -151,114 +240,122 @@ else
     Array.Copy(buffer, 0, result, capacity - writeIndex, writeIndex);
 ```
 
-Event lists (`_bootStages`, `_assetLoads`, `_networkEvents`) are unbounded `List<T>`.
+Additional storage: boot stages, asset loads, network events (unbounded lists), scene snapshots (capped at 100), profiler markers, DrWario capture frame numbers.
 
 ### RuntimeCollector — Per-Frame Hot Path
 
 ```csharp
-// Zero-allocation hot path:
-FrameTimingManager.CaptureFrameTimings();             // native call
-uint count = FrameTimingManager.GetLatestTimings(1, _frameTimings); // reuses FrameTiming[1]
+using (s_SampleMarker.Auto())  // ProfilerMarker wraps sampling
+{
+    _profilerBridge?.Sample();                                // ProfilerRecorder counters (zero-alloc)
+    // Accumulate marker timing data for subsystem profiling
 
-long totalHeap = Profiler.GetTotalAllocatedMemoryLong();
-long gcDelta = totalHeap - _prevTotalGcAlloc;         // heap growth since last frame
-if (gcDelta < 0) gcDelta = 0;                         // handle GC collection resets
+    // Subtract DrWario.Sample overhead from CPU measurement
+    float selfOverheadMs = _selfOverheadRecorder.CurrentValue / 1_000_000f;
+    float cpuMs = (profilerBridgeMs > 0 ? profilerBridgeMs : deltaTimeMs) - selfOverheadMs;
 
-var sample = new FrameSample { ... };                  // stack-allocated struct
-ActiveSession.RecordFrame(sample);                     // struct copy to buffer
+    var sample = new FrameSample { ... };                     // stack-allocated struct
+    OnFrameSampled?.Invoke(ref sample);                       // editor hooks (scene snapshot tracker)
+    ActiveSession.RecordFrame(sample);                        // struct copy to buffer
+}
 ```
 
-### Singleton Lifecycle
+### Cross-Assembly Communication
+
+Runtime assembly cannot reference Editor assembly. The bridge uses events:
 
 ```
-Ensure() → creates hidden DontDestroyOnLoad("[DrWario] RuntimeCollector")
-StartSession() → new ProfilingSession → Start() → fires OnSessionStarted
-Update() → samples frame data into ring buffer
-StopSession() → session.Stop() → disables Update()
-DestroyCollector() → Destroy(gameObject)
+RuntimeCollector.OnFrameSampled (delegate event, ref FrameSample)
+    ↓ subscribed by
+DrWarioPlayModeHook.OnFrameSampled (Editor)
+    ↓ calls
+SceneSnapshotTracker.OnFrame(sample) → returns ObjectCount
+    ↓ writes back to
+sample.ObjectCount
 ```
 
 ---
 
-## Analysis Engine — 3-Phase Pipeline
+## Analysis Engine — 4-Phase Pipeline
 
 ### Phase 1: Deterministic Rules
 
-All 6 rules run sequentially. Each receives the full `ProfilingSession` and returns `List<DiagnosticFinding>`.
+8 rules run sequentially (skipping disabled rules via `RuleConfig`). Each receives the full `ProfilingSession` and returns `List<DiagnosticFinding>`.
 
-### Phase 2: AI Analysis (Optional, Async)
+Rules with `IConfigurableRule` expose adjustable thresholds in the UI.
 
-`AIAnalysisRule` receives Phase 1 findings as context, then:
-1. `LLMPromptBuilder.BuildSystemPrompt()` — expert Unity analyst instructions + `AdditionalContext`
-2. `LLMPromptBuilder.BuildUserPrompt()` — structured JSON with session stats, memory trajectory (12 downsampled points + linear regression), boot pipeline, asset loads, pre-analysis findings
-3. `LLMClient.SendAsync()` — async HTTP POST to provider (non-blocking)
-4. `LLMResponseParser.Parse()` — JSON array → `DiagnosticFinding` list
+### Phase 2: Correlation Detection
 
-Use `AnalysisEngine.AnalyzeAsync()` for the full async pipeline. `Analyze()` runs deterministic rules only.
+`CorrelationEngine.Detect()` finds 8 cross-cutting patterns:
 
-### Phase 3: Deduplication + Grading
+| Pattern | Detection | Impact |
+|---------|-----------|--------|
+| GC↔Frame Drops | Temporal overlap (±2 frame window) | Critical: GC is causing jank |
+| Asset Loads↔GC | Both present in same session | Warning: sync loads allocate |
+| Boot↔Asset Loads | Slow boot + slow assets | Boot pipeline bottleneck |
+| Memory Leak↔GC | Leak + allocation spikes | Leak accelerated by allocations |
+| GPU↔Geometry | GPU bottleneck + high tri/draw calls | Geometry overload |
+| CPU↔Draw Calls | CPU bottleneck + high draw calls | CPU-side rendering overhead |
+| Pervasive GC | >50% of frames have GC spikes | Systemic allocation problem |
+| Object Churn/Leak | Scene object growth from snapshots | Instantiate without Destroy |
 
-AI findings (prefixed `AI_`) get priority. Dedup key = `category + normalized title` (stripped of parenthetical data, lowercased). Then `ComputeGrades()` applies the scoring formula.
+### Phase 3: Grading
+
+```
+Score = 100
+For each finding: Critical → -15, Warning → -5, Info → -1
+Score = clamp(score, 0, 100)
+Grade: A ≥ 90 | B ≥ 80 | C ≥ 70 | D ≥ 60 | F < 60
+```
+
+Same formula applied per-category.
+
+### Phase 4: Report Synthesis
+
+`ReportSynthesizer.Synthesize()` produces a standalone summary:
+- **Executive summary** — One-paragraph assessment of overall health
+- **Bottleneck identification** — Primary bottleneck subsystem
+- **Prioritized actions** — Ranked list combining correlation-driven and individual finding actions
+
+### On-Demand: AI Enhancement
+
+`EnhanceWithAIStreamingAsync()` — Takes existing report, adds AI findings via SSE streaming, re-deduplicates, re-grades, re-synthesizes. Does not re-run deterministic rules.
 
 ---
 
-## Rule Algorithms Detail
+## False Positive Prevention
 
-### GCAllocationRule
+Three mechanisms prevent DrWario from detecting its own work as performance issues:
 
-```
-For each frame: if GcAllocBytes > 1024 → spike
-spikeRatio = spikeCount / frameCount
-Severity: Critical if ratio > 20%, Warning if count > 10, else Info
-Metric: spikeCount | Threshold: 1024
-```
+### 1. Deferred Snapshot Capture
 
-### FrameDropRule
+`SceneSnapshotTracker` detects triggers (spike, GC, periodic) on frame N but executes the expensive `FindObjectsByType`/`GetComponents` capture on frame N+1. This prevents DrWario's own allocations from inflating the spike frame's GC measurements.
 
-```
-targetMs = 1000 / TargetFrameRate (default 16.67ms)
-Sort all CPU times ascending
-dropCount = frames > targetMs
-severeCount = frames > 50ms
-P95 = sorted[(int)(length * 0.95)]
-P99 = sorted[(int)(length * 0.99)]
-Severity: Critical if severeCount > 5, Warning if dropRatio > 10%, else Info
-Metric: P95 | Threshold: targetMs
-```
+### 2. Self-Overhead Subtraction
 
-### MemoryLeakRule
+A `ProfilerRecorder` tracks the `DrWario.Sample` marker's time in nanoseconds. This value (which reports the previous frame's overhead, matching when FrameTimingManager also reports the previous frame) is subtracted from `CpuFrameTimeMs`.
 
-```
-Linear regression: slope = (n·ΣXY - ΣX·ΣY) / (n·ΣX² - (ΣX)²) bytes/sec
-Requires ≥60 frames
-Warning: slope > 1 MB/s | Critical: slope > 5 MB/s
-Metric: slope (bytes/sec) | Threshold: 1MB/s
-```
+### 3. Capture Frame Exclusion
 
-### BootStageRule
+`ProfilingSession.DrWarioCaptureFrames` stores frame numbers where DrWario performed expensive hierarchy captures. `GCAllocationRule` skips these frames entirely when counting GC spikes.
 
-```
-Per-stage: Warning if durationMs > 2000, Critical if > 4000
-Failed stages: Critical (RuleId: BOOT_FAILURE)
-Total boot: Warning if > 8000ms, Critical if > 16000ms (RuleId: TOTAL_BOOT_TIME)
-```
+---
 
-### AssetLoadRule
+## Rule Reference
 
-```
-slowLoads = loads where DurationMs > 500
-Critical: any load > 2000ms | Warning: >3 slow loads | Info: any slow
-Metric: max duration | Threshold: 500ms
-```
-
-### NetworkLatencyRule (3 independent checks)
-
-```
-1. Errors: Warning if any, Critical if errorRate > 5%
-2. Latency: filters receives with LatencyMs > 0
-   Critical if max > 250ms, Warning if >25% exceed 100ms
-3. Throughput: Info if > 100 KB/s, Warning if > 500 KB/s
-```
+| RuleId | Class | Category | Configurable | Description |
+|--------|-------|----------|-------------|-------------|
+| `GC_SPIKE` | GCAllocationRule | Memory | Yes (threshold bytes) | GC allocation spikes per frame |
+| `FRAME_DROP` | FrameDropRule | CPU | Yes (target ms) | Frame time vs target FPS, P95/P99 |
+| `SLOW_BOOT` | BootStageRule | Boot | No | Individual stages >2s |
+| `BOOT_FAILURE` | BootStageRule | Boot | No | Failed boot stages |
+| `TOTAL_BOOT_TIME` | BootStageRule | Boot | No | Total boot >8s |
+| `MEMORY_LEAK` | MemoryLeakRule | Memory | No | Heap growth via linear regression |
+| `SLOW_ASSET_LOAD` | AssetLoadRule | Assets | No | Loads >500ms |
+| `NETWORK_HEALTH` | NetworkLatencyRule | Network | No | Errors, latency >100ms, bandwidth |
+| `RENDER_EFFICIENCY` | RenderingEfficiencyRule | Rendering | No | Draw calls, batching, SetPass |
+| `CPU_GPU_BOTTLENECK` | CPUvsGPUBottleneckRule | CPU/Rendering | No | Bottleneck classification |
+| `AI_*` | LLM output | Any | N/A | AI-generated findings |
 
 ---
 
@@ -268,46 +365,18 @@ Metric: max duration | Threshold: 500ms
 
 | Provider | Default Model | Endpoint | Auth |
 |----------|--------------|----------|------|
-| Claude | `claude-sonnet-4-6` | `https://api.anthropic.com/v1/messages` | `x-api-key` + `anthropic-version: 2023-06-01` |
-| OpenAI | `gpt-4o` | `https://api.openai.com/v1/chat/completions` | `Authorization: Bearer <key>` |
+| Claude | `claude-sonnet-4-6` | `https://api.anthropic.com/v1/messages` | `x-api-key` + `anthropic-version` |
+| OpenAI | `gpt-4o` | `https://api.openai.com/v1/chat/completions` | Bearer token |
 | Ollama | `llama3:70b` | `http://localhost:11434/api/chat` | None |
-| Custom | `gpt-4o` | User-defined | `Authorization: Bearer <key>` |
+| Custom | `gpt-4o` | User-defined | Bearer token |
 
-### Request Body Differences
+### Streaming (SSE)
 
-| Provider | System prompt location | Extra fields |
-|----------|----------------------|--------------|
-| Claude | Top-level `"system"` | No `temperature` |
-| OpenAI/Custom | `messages[0].role = "system"` | `"temperature": 0.3` |
-| Ollama | Same as OpenAI | `"stream": false` |
+Claude and OpenAI support Server-Sent Events streaming via `SseDownloadHandler` (custom `DownloadHandlerScript`). Findings are parsed progressively as JSON array elements arrive, enabling real-time UI updates. Ollama/Custom fall back to blocking request/response.
 
 ### Prompt Structure
 
-**System prompt:**
-- Expert Unity performance analyst role
-- JSON array output format with exact field names
-- Focus: cross-metric correlations, platform-specific issues, Unity patterns
-- Optional `AdditionalContext` from framework integration
-
-**User prompt (JSON object):**
-- `session` — metadata
-- `frameSummary` — CPU/GPU stats (avg/P50/P95/P99/max/min), GC stats, drop counts
-- `memoryTrajectory` — 12 downsampled points + OLS regression (`heapSlopeBytePerSec`, `heapSlopeMBPerMin`)
-- `bootPipeline` — stage list with durations and success flags
-- `assetLoads` — count/avg/max/total + top 10 slowest >500ms
-- `preAnalysis` — Phase 1 findings as compact JSON
-
-### Response Parsing
-
-1. Strip markdown code fences if present
-2. Extract content between outermost `[` and `]`
-3. Wrap as `{"items": <array>}` for `JsonUtility` compatibility
-4. Parse into `FindingJson[]` → map to `DiagnosticFinding` list
-5. On failure: emit `AI_PARSE_ERROR` Info finding
-
-### API Key Storage
-
-XOR obfuscation with `SystemInfo.deviceUniqueIdentifier` as key, then Base64 encoded. Stored per-provider in EditorPrefs (`DrWario_ApiKey_Claude`, `DrWario_ApiKey_OpenAI`, etc.). **Not encryption** — prevents plaintext in registry.
+**User prompt (JSON):** Session metadata, frame summary (avg/P95/P99), memory trajectory (12 points + regression), boot pipeline, asset loads, pre-analysis findings, editor context (baseline, windows), scene snapshots (baseline/final object counts, top instantiated objects, spike-frame diffs), profiler markers (top-N by inclusive time).
 
 ---
 
@@ -318,45 +387,14 @@ All prefixed with `DrWario_`:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `DrWario_Provider` | int | 0 (Claude) | `LLMProvider` enum value |
-| `DrWario_ApiKey_Claude` | string | `""` | XOR-obfuscated + Base64 |
-| `DrWario_ApiKey_OpenAI` | string | `""` | XOR-obfuscated + Base64 |
-| `DrWario_ApiKey_Custom` | string | `""` | XOR-obfuscated + Base64 |
+| `DrWario_ApiKey_{Provider}` | string | `""` | XOR-obfuscated + Base64 |
 | `DrWario_ModelId` | string | Provider default | Model identifier |
 | `DrWario_Endpoint` | string | Provider default | Full API URL |
 | `DrWario_Timeout` | int | 30 | HTTP timeout (seconds) |
 | `DrWario_Enabled` | bool | false | Master AI toggle |
 | `DrWario_AutoStart` | bool | false | Auto-start on Play Mode |
-
----
-
-## RuleId Reference
-
-| RuleId | Class | Category | Severity Range |
-|--------|-------|----------|---------------|
-| `GC_SPIKE` | GCAllocationRule | Memory | Info → Critical |
-| `FRAME_DROP` | FrameDropRule | CPU | Info → Critical |
-| `SLOW_BOOT` | BootStageRule | Boot | Warning → Critical |
-| `BOOT_FAILURE` | BootStageRule | Boot | Critical |
-| `TOTAL_BOOT_TIME` | BootStageRule | Boot | Warning → Critical |
-| `MEMORY_LEAK` | MemoryLeakRule | Memory | Warning → Critical |
-| `SLOW_ASSET_LOAD` | AssetLoadRule | Assets | Info → Critical |
-| `NETWORK_HEALTH` | NetworkLatencyRule | Network | Info → Critical |
-| `AI_*` | LLM output | Any | LLM-determined |
-| `AI_UNKNOWN` | LLM (null ruleId) | General | LLM-determined |
-| `AI_PARSE_ERROR` | LLMResponseParser | General | Info |
-
----
-
-## Performance Characteristics
-
-| Aspect | Detail |
-|--------|--------|
-| Frame buffer memory | ~168KB (3600 × 48B structs, allocated once) |
-| Per-frame overhead | Zero-allocation: FrameTimingManager + 3 Profiler API calls + struct copy |
-| GetFrames() | Allocates `FrameSample[frameCount]` per call — avoid in hot paths |
-| Analysis time | Rules: instant. AI: 2–30s depending on provider/network |
-| Report storage | JSON in `Library/DrWarioReports/`, auto-prunes to 50 reports |
-| Release builds | Zero footprint — `#if UNITY_EDITOR \|\| DEVELOPMENT_BUILD` strips all |
+| `DrWario_Rule_{RuleId}_Enabled` | bool | true | Per-rule enable/disable |
+| `DrWario_Rule_{RuleId}_Threshold` | float | Rule default | Per-rule threshold override |
 
 ---
 
@@ -364,16 +402,21 @@ All prefixed with `DrWario_`:
 
 ### Fixed (v1.1)
 
-1. ~~**GcAllocBytes double-call**~~ — Fixed. Was calling `Profiler.GetTotalAllocatedMemoryLong()` twice; now uses single call.
-2. ~~**Rate limiter per-instance**~~ — Fixed. `LLMClient._lastRequestTime` is now `static`.
-3. ~~**CategoryGrades JSON export**~~ — Fixed. Uses serializable list wrapper.
-4. ~~**TestConnectionAsync false positive**~~ — Fixed. Validates response content is non-empty.
-5. ~~**`Task.Wait()` blocks editor**~~ — Fixed. `AnalysisEngine.AnalyzeAsync()` runs AI analysis without blocking.
+1. ~~**GcAllocBytes double-call**~~ — Fixed. Single `Profiler.GetTotalAllocatedMemoryLong()` call.
+2. ~~**Rate limiter per-instance**~~ — Fixed. `_lastRequestTime` is now `static`.
+3. ~~**CategoryGrades JSON export**~~ — Fixed. Serializable list wrapper.
+4. ~~**TestConnectionAsync false positive**~~ — Fixed. Validates response content.
+5. ~~**`Task.Wait()` blocks editor**~~ — Fixed. Fully async pipeline.
+
+### Fixed (v2.0)
+
+6. ~~**Basic profiling data**~~ — Fixed. ProfilerBridge with ProfilerRecorder counters.
+7. ~~**No editor overhead adjustment**~~ — Fixed. EditorBaseline + confidence scoring.
+8. ~~**DrWario inflating its own measurements**~~ — Fixed. Self-overhead subtraction + deferred capture + capture frame exclusion.
 
 ### Remaining Limitations
 
-1. **GPU timing returns 0** on WebGL, some mobile, integrated graphics. No fallback or sentinel.
-2. **Hand-rolled JSON extraction** — `LLMClient.ExtractContent()` manually parses provider responses instead of using a JSON library. Fragile against format changes.
-3. **AdditionalContext is global mutable static** — Last `[InitializeOnLoad]` class wins. No multi-framework support.
-4. **BootStageRule emits 3 RuleIds** — `SLOW_BOOT`, `BOOT_FAILURE`, `TOTAL_BOOT_TIME` from one class. Breaks assumption that `RuleId` property identifies all findings.
-5. **Basic profiling data** — Uses raw `Profiler.GetTotalAllocatedMemoryLong()` instead of `ProfilerRecorder` counters. No draw call, batch, or rendering metrics. See [design-profiler-integration.md](design-profiler-integration.md) for the plan to fix this.
+1. **GPU timing returns 0** on WebGL, some mobile, integrated graphics. No fallback.
+2. **Hand-rolled JSON extraction** — `LLMClient.ExtractContent()` manually parses provider responses. Fragile.
+3. **AdditionalContext is global mutable static** — Last `[InitializeOnLoad]` class wins.
+4. **BootStageRule emits 3 RuleIds** — `SLOW_BOOT`, `BOOT_FAILURE`, `TOTAL_BOOT_TIME` from one class.
