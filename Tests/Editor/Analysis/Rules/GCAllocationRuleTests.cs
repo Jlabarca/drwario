@@ -182,5 +182,74 @@ namespace DrWario.Tests
             // Description should start with the avg alloc note
             Assert.That(findings[0].Description, Does.Contain("Avg").IgnoreCase);
         }
+
+        // ── AllocCount fallback: fires when GcAllocBytes=0 but GcAllocCount is high ──
+
+        [Test]
+        public void Analyze_NoBytesButHighAllocCount_ProducesWarningFinding()
+        {
+            // GcAllocBytes=0 but GcAllocCount=100 (above 50 warning, below 200 critical)
+            var session = new TestSessionBuilder().WithCapacity(200).Build();
+            for (int i = 0; i < 100; i++)
+                session.RecordFrame(new FrameSample { Timestamp = i * 0.0167f, DeltaTime = 0.0167f,
+                    CpuFrameTimeMs = 5f, GcAllocBytes = 0, GcAllocCount = 100, FrameNumber = i });
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            Assert.AreEqual("GC_SPIKE", findings[0].RuleId);
+            Assert.AreEqual(Severity.Warning, findings[0].Severity);
+            Assert.That(findings[0].Title, Does.Contain("alloc").IgnoreCase);
+        }
+
+        [Test]
+        public void Analyze_NoBytesButCriticalAllocCount_ProducesCriticalFinding()
+        {
+            // avg 920 allocs/frame (as seen in min_client OSX run) — Critical
+            var session = new TestSessionBuilder().WithCapacity(200).Build();
+            for (int i = 0; i < 100; i++)
+                session.RecordFrame(new FrameSample { Timestamp = i * 0.0167f, DeltaTime = 0.0167f,
+                    CpuFrameTimeMs = 2f, GcAllocBytes = 0, GcAllocCount = 920, FrameNumber = i });
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            Assert.AreEqual(Severity.Critical, findings[0].Severity);
+        }
+
+        [Test]
+        public void Analyze_NoBytesLowAllocCount_NoFinding()
+        {
+            // avg 30 allocs/frame — below 50 warning threshold
+            var session = new TestSessionBuilder().WithCapacity(200).Build();
+            for (int i = 0; i < 100; i++)
+                session.RecordFrame(new FrameSample { Timestamp = i * 0.0167f, DeltaTime = 0.0167f,
+                    GcAllocBytes = 0, GcAllocCount = 30, FrameNumber = i });
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(0, findings.Count);
+        }
+
+        [Test]
+        public void Analyze_NoBytesNoCountData_NoFinding()
+        {
+            var session = new TestSessionBuilder()
+                .AddFrames(100, gcAllocBytes: 0)
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(0, findings.Count);
+        }
+
+        [Test]
+        public void Analyze_NoBytesCountDataOnMinorityOfFrames_NoFinding()
+        {
+            // Count data on only 30% of frames — below 50% trust threshold
+            var session = new TestSessionBuilder().WithCapacity(200).Build();
+            for (int i = 0; i < 100; i++)
+                session.RecordFrame(new FrameSample { Timestamp = i * 0.0167f, DeltaTime = 0.0167f,
+                    GcAllocBytes = 0, GcAllocCount = i < 30 ? 500 : 0, FrameNumber = i });
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(0, findings.Count);
+        }
     }
 }
