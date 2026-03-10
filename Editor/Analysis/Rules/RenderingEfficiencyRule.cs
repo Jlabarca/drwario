@@ -112,8 +112,10 @@ namespace DrWario.Editor.Analysis.Rules
                     Title = $"High SetPass Calls (avg {avgSetPass}, max {maxSetPass})",
                     Description = $"Averaging {avgSetPass} SetPass calls per frame (peak {maxSetPass}). " +
                                   $"Each SetPass call is a GPU state change (shader/material switch).",
-                    Recommendation = "Reduce unique material/shader count. Use material property blocks instead of " +
-                                     "unique material instances. Enable SRP Batcher for compatible shaders. " +
+                    Recommendation = "Reduce unique material/shader count. " +
+                                     "Avoid 'new Material(mat)' in Awake/Update — each call creates a unique instance " +
+                                     "that breaks batching; use MaterialPropertyBlock instead. " +
+                                     "Enable SRP Batcher for compatible shaders. " +
                                      "Sort rendering by material to minimize state changes.",
                     Metric = avgSetPass,
                     Threshold = HighSetPassCalls,

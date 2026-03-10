@@ -103,5 +103,97 @@ namespace DrWario.Tests
             Assert.AreEqual(Confidence.High, findings[0].Confidence);
             Assert.IsNull(findings[0].EnvironmentNote);
         }
+
+        [Test]
+        public void Analyze_CyclicInstantiationPattern_TitleMentionsChurn()
+        {
+            // Simulate cyclic Instantiate/Destroy: heap grows, scene shows alternating add/remove bursts
+            var session = new TestSessionBuilder()
+                .AddFramesWithGrowingHeap(100, startHeap: 100_000_000, growthPerFrame: 35000)
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 0, TotalObjectCount = 150,
+                    Added = new SceneObjectEntry[60], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.Baseline
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 20, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[340], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 40, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 60, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[335], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 80, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            Assert.That(findings[0].Title, Does.Contain("Churn").IgnoreCase
+                .Or.Contain("Object Lifecycle").IgnoreCase);
+            Assert.That(findings[0].Recommendation, Does.Contain("Pool").IgnoreCase
+                .Or.Contain("pool").IgnoreCase);
+        }
+
+        [Test]
+        public void Analyze_MonotonicGrowthNoSnapshots_TitleMentionsLeak()
+        {
+            // No scene snapshots — should remain "Potential Memory Leak"
+            var session = new TestSessionBuilder()
+                .AddFramesWithGrowingHeap(100, startHeap: 100_000_000, growthPerFrame: 35000)
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            Assert.That(findings[0].Title, Does.Contain("Leak").IgnoreCase
+                .Or.Contain("Memory Leak").IgnoreCase);
+        }
+
+        [Test]
+        public void Analyze_SnapshotsOnlyAdds_NotCyclic_TitleMentionsLeak()
+        {
+            // Snapshots only show adds (no removals) — monotonic, not cyclic
+            var session = new TestSessionBuilder()
+                .AddFramesWithGrowingHeap(100, startHeap: 100_000_000, growthPerFrame: 35000)
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 0, TotalObjectCount = 100,
+                    Added = new SceneObjectEntry[50], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.Baseline
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 30, TotalObjectCount = 150,
+                    Added = new SceneObjectEntry[50], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 60, TotalObjectCount = 200,
+                    Added = new SceneObjectEntry[50], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            // Only adds, no removes → not cyclic → should still say "Leak"
+            Assert.That(findings[0].Title, Does.Contain("Leak").IgnoreCase);
+        }
     }
 }

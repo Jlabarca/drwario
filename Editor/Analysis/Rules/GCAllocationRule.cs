@@ -68,6 +68,11 @@ namespace DrWario.Editor.Analysis.Rules
                          : spikeCount > 10 ? Severity.Warning
                          : Severity.Info;
 
+            // Average alloc bytes/frame (all frames, not just spikes — headline metric)
+            long totalAllocBytes = 0;
+            foreach (var f in frames) totalAllocBytes += f.GcAllocBytes;
+            long avgAllocBytes = frames.Length > 0 ? totalAllocBytes / frames.Length : 0;
+
             // Include GC alloc count if available (from ProfilerRecorder)
             string allocCountNote = "";
             bool hasAllocCount = frames.Any(f => f.GcAllocCount > 0);
@@ -99,8 +104,9 @@ namespace DrWario.Editor.Analysis.Rules
                 RuleId = RuleId,
                 Category = Category,
                 Severity = severity,
-                Title = $"GC Allocation Spikes ({spikeCount} frames)",
-                Description = $"{spikeCount}/{frames.Length} frames exceeded {effectiveThreshold}B threshold{thresholdNote}. " +
+                Title = $"GC Allocation Spikes ({spikeCount} frames, avg {avgAllocBytes / 1024f:F0}KB/frame)",
+                Description = $"Avg {avgAllocBytes / 1024f:F1}KB/frame across all frames. " +
+                              $"{spikeCount}/{frames.Length} frames exceeded {effectiveThreshold}B threshold{thresholdNote}. " +
                               $"Worst: {worstAlloc / 1024f:F1}KB at frame {worstFrame}. " +
                               $"Spike ratio: {ratio:P1}.{allocCountNote}",
                 Recommendation = "Reduce per-frame allocations. Check for string concatenation in Update(), " +

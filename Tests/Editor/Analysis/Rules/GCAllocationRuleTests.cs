@@ -152,5 +152,35 @@ namespace DrWario.Tests
             Assert.AreEqual(1, findings.Count);
             Assert.AreEqual(95, findings[0].FrameIndex);
         }
+
+        [Test]
+        public void Analyze_TitleIncludesAvgBytesPerFrame()
+        {
+            // 100 frames: 90 at 0 bytes, 10 at 10240 bytes = avg 1024 bytes/frame
+            var session = new TestSessionBuilder()
+                .AddFrames(90, gcAllocBytes: 0)
+                .AddFrames(10, gcAllocBytes: 10240)
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            // Title should mention average KB/frame
+            Assert.That(findings[0].Title, Does.Contain("avg").IgnoreCase
+                .Or.Contain("KB/frame").IgnoreCase);
+        }
+
+        [Test]
+        public void Analyze_DescriptionIncludesAvgBytesLine()
+        {
+            // All 100 frames at 5120 bytes = avg 5 KB/frame
+            var session = new TestSessionBuilder()
+                .AddFrames(100, gcAllocBytes: 5120)
+                .Build();
+
+            var findings = _rule.Analyze(session);
+            Assert.AreEqual(1, findings.Count);
+            // Description should start with the avg alloc note
+            Assert.That(findings[0].Description, Does.Contain("Avg").IgnoreCase);
+        }
     }
 }

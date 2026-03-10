@@ -142,6 +142,10 @@ namespace DrWario.Editor.Analysis
             if (gcDropCorr.HasValue && gcDropCorr.Value.Id != null)
                 return "Primary bottleneck: GC allocations are causing frame hitches.";
 
+            var cyclicCorr = correlations?.FirstOrDefault(c => c.Id == "CORR_CYCLIC_INSTANTIATION");
+            if (cyclicCorr.HasValue && cyclicCorr.Value.Id != null)
+                return "Primary bottleneck: cyclic Instantiate/Destroy bursts inflating heap and driving GC pressure.";
+
             if (hasLeak && hasGc)
                 return "Primary bottleneck: memory leak amplifying GC pressure over time.";
 
@@ -223,6 +227,30 @@ namespace DrWario.Editor.Analysis
                     Action = "Reduce draw calls via batching, instancing, or SRP Batcher",
                     Rationale = "CPU is spending too much time issuing rendering commands.",
                     RelatedRuleIds = new[] { "BOTTLENECK", "DRAW_CALLS" },
+                    ExpectedImpact = "High"
+                });
+            }
+
+            if (correlationIds.Contains("CORR_CYCLIC_INSTANTIATION"))
+            {
+                actions.Add(new ActionItem
+                {
+                    Priority = actions.Count + 1,
+                    Action = "Pool cyclic objects instead of Instantiate/Destroy to stop heap inflation",
+                    Rationale = "Scene snapshots show repeated large object creation/destruction bursts. " +
+                        "Each burst expands the managed heap without releasing memory, causing gradual inflation and GC pressure.",
+                    RelatedRuleIds = new[] { "MEMORY_LEAK", "GC_SPIKE" },
+                    ExpectedImpact = "High"
+                });
+            }
+            else if (correlationIds.Contains("CORR_OBJECT_CHURN"))
+            {
+                actions.Add(new ActionItem
+                {
+                    Priority = actions.Count + 1,
+                    Action = "Pool frequently instantiated/destroyed objects to reduce GC pressure",
+                    Rationale = "High scene object churn is generating GC pressure from constructor allocations and component setup.",
+                    RelatedRuleIds = new[] { "GC_SPIKE" },
                     ExpectedImpact = "High"
                 });
             }

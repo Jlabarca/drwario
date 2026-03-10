@@ -58,6 +58,9 @@ namespace DrWario.Editor.Analysis
             // 8. Object count growth correlating with GC/memory issues
             DetectObjectGrowthCorrelation(findingsByRule, session, insights);
 
+            // 9. Cyclic Instantiate/Destroy bursts (Instantiate/Destroy cycles)
+            DetectCyclicInstantiationPattern(findingsByRule, session, insights);
+
             return insights;
         }
 
@@ -326,6 +329,59 @@ namespace DrWario.Editor.Analysis
                     Confidence = Confidence.Medium
                 });
             }
+        }
+
+        private static void DetectCyclicInstantiationPattern(
+            Dictionary<string, List<DiagnosticFinding>> byRule,
+            ProfilingSession session,
+            List<CorrelationInsight> insights)
+        {
+            var snapshots = session.SceneSnapshots;
+            if (snapshots == null || snapshots.Count < 3) return;
+
+            // Count snapshots with large-amplitude adds and removes separately.
+            // True cyclic pattern: multiple snapshots with big adds AND multiple with big removes.
+            const int AmplitudeThreshold = 30;
+            int snapsWithLargeAdds = 0, snapsWithLargeRemoves = 0;
+            int maxBurst = 0;
+            foreach (var snap in snapshots)
+            {
+                int added = snap.Added?.Length ?? 0;
+                int removed = snap.Removed?.Length ?? 0;
+                if (added > AmplitudeThreshold) { snapsWithLargeAdds++; if (added > maxBurst) maxBurst = added; }
+                if (removed > AmplitudeThreshold) snapsWithLargeRemoves++;
+            }
+
+            if (snapsWithLargeAdds < 2 || snapsWithLargeRemoves < 2) return;
+
+            // Only fire if GC or memory findings corroborate the churn
+            bool hasGc = byRule.ContainsKey("GC_SPIKE");
+            bool hasLeak = byRule.ContainsKey("MEMORY_LEAK");
+            if (!hasGc && !hasLeak) return;
+
+            // Don't double-report — skip if CORR_OBJECT_CHURN already captured this
+            if (insights.Any(i => i.Id == "CORR_OBJECT_CHURN")) return;
+
+            string[] sourceIds = hasGc && hasLeak
+                ? new[] { "GC_SPIKE", "MEMORY_LEAK" }
+                : hasGc ? new[] { "GC_SPIKE" } : new[] { "MEMORY_LEAK" };
+
+            insights.Add(new CorrelationInsight
+            {
+                Id = "CORR_CYCLIC_INSTANTIATION",
+                SourceRuleIds = sourceIds,
+                Title = $"Cyclic Instantiate/Destroy pattern: {snapsWithLargeAdds} burst(s) of ~{maxBurst} objects",
+                Description = $"Scene snapshots show {snapsWithLargeAdds} large object creation burst(s) and " +
+                    $"{snapsWithLargeRemoves} large destruction burst(s). This Instantiate/Destroy cycle " +
+                    $"forces Unity's managed heap to expand for each burst without returning memory to the OS, " +
+                    $"causing gradual heap inflation and GC pressure proportional to burst size.",
+                Recommendation = "Pool the objects being cycled — reuse existing GameObjects with SetActive(true/false) " +
+                    "instead of Instantiate/Destroy. This eliminates per-cycle heap expansion, GC from constructor " +
+                    "allocations, and component initialization overhead. " +
+                    "Use UnityEngine.Pool.ObjectPool<T> or a simple stack-based pool.",
+                Severity = snapsWithLargeAdds >= 3 ? Severity.Critical : Severity.Warning,
+                Confidence = Confidence.High
+            });
         }
 
         private static HashSet<int> GetAffectedFrameSet(List<DiagnosticFinding> findings)

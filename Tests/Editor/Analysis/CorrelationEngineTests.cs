@@ -207,5 +207,160 @@ namespace DrWario.Tests
             var correlations = CorrelationEngine.Detect(findings, session);
             Assert.IsTrue(correlations.Any(c => c.Id == "CORR_PERVASIVE_GC"));
         }
+
+        [Test]
+        public void Detect_CyclicInstantiation_MultipleAddRemoveBursts_WithGcFinding_ProducesCorrelation()
+        {
+            var findings = new List<DiagnosticFinding>
+            {
+                new DiagnosticFinding
+                {
+                    RuleId = "GC_SPIKE", Category = "Memory", Severity = Severity.Critical,
+                    Title = "GC Spikes", Metric = 500f
+                }
+            };
+
+            // Two large add bursts and two large remove bursts — classic cyclic pattern
+            var session = new TestSessionBuilder()
+                .AddFrames(100, gcAllocBytes: 5000)
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 10, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[340], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 30, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 60, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[335], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 80, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .Build();
+
+            var correlations = CorrelationEngine.Detect(findings, session);
+            Assert.IsTrue(correlations.Any(c => c.Id == "CORR_CYCLIC_INSTANTIATION"),
+                "Expected CORR_CYCLIC_INSTANTIATION for 2+ large add bursts + 2+ large remove bursts");
+        }
+
+        [Test]
+        public void Detect_CyclicInstantiation_OnlyOneBurst_NoCorrelation()
+        {
+            var findings = new List<DiagnosticFinding>
+            {
+                new DiagnosticFinding
+                {
+                    RuleId = "GC_SPIKE", Category = "Memory", Severity = Severity.Warning,
+                    Title = "GC Spikes", Metric = 50f
+                }
+            };
+
+            // Only one large add and one remove — not cyclic enough
+            var session = new TestSessionBuilder()
+                .AddFrames(100)
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 10, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[340], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 30, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .Build();
+
+            var correlations = CorrelationEngine.Detect(findings, session);
+            Assert.IsFalse(correlations.Any(c => c.Id == "CORR_CYCLIC_INSTANTIATION"),
+                "Single add+remove pair should not produce CORR_CYCLIC_INSTANTIATION");
+        }
+
+        [Test]
+        public void Detect_CyclicInstantiation_NoGcOrLeakFinding_NoCorrelation()
+        {
+            // Even with cyclic bursts, no GC/memory finding means no correlation
+            var findings = new List<DiagnosticFinding>
+            {
+                new DiagnosticFinding
+                {
+                    RuleId = "FRAME_DROP", Category = "CPU", Severity = Severity.Warning,
+                    Title = "Frame Drops", Metric = 5f
+                }
+            };
+
+            var session = new TestSessionBuilder()
+                .AddFrames(100)
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 10, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[340], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 30, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 60, TotalObjectCount = 490,
+                    Added = new SceneObjectEntry[335], Removed = new SceneObjectEntry[0],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .AddSceneSnapshot(new SceneSnapshotDiff
+                {
+                    FrameIndex = 80, TotalObjectCount = 155,
+                    Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335],
+                    Trigger = SnapshotTrigger.ObjectDelta
+                })
+                .Build();
+
+            var correlations = CorrelationEngine.Detect(findings, session);
+            Assert.IsFalse(correlations.Any(c => c.Id == "CORR_CYCLIC_INSTANTIATION"),
+                "CORR_CYCLIC_INSTANTIATION requires GC_SPIKE or MEMORY_LEAK finding");
+        }
+
+        [Test]
+        public void Detect_CyclicInstantiation_ThreePlusBursts_CriticalSeverity()
+        {
+            var findings = new List<DiagnosticFinding>
+            {
+                new DiagnosticFinding
+                {
+                    RuleId = "GC_SPIKE", Category = "Memory", Severity = Severity.Critical,
+                    Title = "GC Spikes", Metric = 1000f
+                }
+            };
+
+            // Three add bursts (snapsWithLargeAdds >= 3) → Critical severity
+            var session = new TestSessionBuilder()
+                .AddFrames(100)
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 10, TotalObjectCount = 490, Added = new SceneObjectEntry[340], Removed = new SceneObjectEntry[0], Trigger = SnapshotTrigger.ObjectDelta })
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 25, TotalObjectCount = 155, Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335], Trigger = SnapshotTrigger.ObjectDelta })
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 40, TotalObjectCount = 490, Added = new SceneObjectEntry[335], Removed = new SceneObjectEntry[0], Trigger = SnapshotTrigger.ObjectDelta })
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 55, TotalObjectCount = 155, Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335], Trigger = SnapshotTrigger.ObjectDelta })
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 70, TotalObjectCount = 490, Added = new SceneObjectEntry[335], Removed = new SceneObjectEntry[0], Trigger = SnapshotTrigger.ObjectDelta })
+                .AddSceneSnapshot(new SceneSnapshotDiff { FrameIndex = 85, TotalObjectCount = 155, Added = new SceneObjectEntry[0], Removed = new SceneObjectEntry[335], Trigger = SnapshotTrigger.ObjectDelta })
+                .Build();
+
+            var correlations = CorrelationEngine.Detect(findings, session);
+            var cyclic = correlations.FirstOrDefault(c => c.Id == "CORR_CYCLIC_INSTANTIATION");
+            Assert.IsNotNull(cyclic.Id, "Expected CORR_CYCLIC_INSTANTIATION");
+            Assert.AreEqual(Severity.Critical, cyclic.Severity);
+        }
     }
 }
