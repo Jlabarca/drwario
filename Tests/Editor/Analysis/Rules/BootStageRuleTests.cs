@@ -1,4 +1,5 @@
 using DrWario.Editor.Analysis.Rules;
+using DrWario.Editor.Analysis;
 using DrWario.Runtime;
 using NUnit.Framework;
 using System.Linq;

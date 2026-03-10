@@ -1,6 +1,6 @@
 # DrWario Test Suite
 
-**Status:** 70 tests passing (P1 complete)
+**Status:** 178 tests (P1 + P2 + P3 complete)
 **Runner:** Unity Test Framework, Edit Mode
 **Assembly:** `DrWario.Editor.Tests`
 
@@ -24,9 +24,25 @@ Tests/Editor/
 ├── Analysis/
 │   ├── DiagnosticReportGradingTests.cs  ← Health score, grades, confidence (11 tests)
 │   ├── ReportComparisonTests.cs         ← Finding diffs, metric deltas (10 tests)
-│   └── EditorAdjustmentTests.cs         ← Baseline subtraction, confidence (12 tests)
-└── LLM/
-    └── LLMResponseParserTests.cs  ← JSON parsing, markdown stripping (13 tests)
+│   ├── EditorAdjustmentTests.cs         ← Baseline subtraction, confidence (12 tests)
+│   ├── AnalysisEngineTests.cs           ← Pipeline orchestration, rule registration (8 tests)
+│   ├── CorrelationEngineTests.cs        ← Cross-finding correlation detection (10 tests)
+│   ├── ReportSynthesizerTests.cs        ← Executive summary, prioritized actions (6 tests)
+│   └── Rules/
+│       ├── GCAllocationRuleTests.cs         ← GC spikes, severity tiers (10 tests)
+│       ├── FrameDropRuleTests.cs            ← Frame drops, P95, 30fps (9 tests)
+│       ├── BootStageRuleTests.cs            ← Slow/failed stages, total boot (8 tests)
+│       ├── MemoryLeakRuleTests.cs           ← Heap growth regression (7 tests)
+│       ├── AssetLoadRuleTests.cs            ← Slow asset loads (6 tests)
+│       ├── NetworkLatencyRuleTests.cs       ← Errors, latency, throughput (8 tests)
+│       ├── RenderingEfficiencyRuleTests.cs  ← Draw calls, set-pass, triangles (10 tests)
+│       └── CPUvsGPUBottleneckRuleTests.cs   ← Bottleneck detection (9 tests)
+├── LLM/
+│   ├── LLMResponseParserTests.cs        ← JSON parsing, markdown stripping (13 tests)
+│   ├── LLMPromptBuilderTests.cs         ← System/user prompt, all sections (22 tests)
+│   └── LLMPromptBuilderMcpTests.cs      ← MCP suspect check, correction prompts (10 tests)
+└── Integration/
+    └── PipelineIntegrationTests.cs      ← Full pipeline, comparison, prompt gen (17 tests)
 ```
 
 ## Test Categories
@@ -44,15 +60,40 @@ No Play Mode, no scene, no MonoBehaviours. Tests pure C# logic.
 | `EditorAdjustmentTests` | 12 | Float/long/int baseline subtraction floored at 0, confidence classification (High/Medium/Low), environment note generation with window state |
 | `DataStructTests` | 7 | DiagnosticFinding defaults, Severity/Confidence/NetworkEventType/SnapshotTrigger enum ordering, EditorBaseline/SceneCensus default validity |
 
-### P2: Editor Tests (planned — ~56 tests)
+### P2: Rule & Component Tests (91 tests — DONE)
 
-Individual analysis rules, AnalysisEngine pipeline, LLMPromptBuilder, SceneCensusCapture.
-See [study-test-plan.md](../study-test-plan.md) sections 3.1–3.6.
+Individual analysis rules, AnalysisEngine pipeline, CorrelationEngine, ReportSynthesizer.
 
-### P3: Integration Tests (planned — ~17 tests)
+| Test Class | Count | What It Covers |
+|-----------|-------|---------------|
+| `GCAllocationRuleTests` | 10 | No spikes, empty session, info/warning/critical severity, editor baseline, capture frame exclusion, affected frames, worst frame |
+| `FrameDropRuleTests` | 9 | All under target, empty, info/warning/critical severity, 30fps target, affected frames, P95 metric, editor confidence |
+| `BootStageRuleTests` | 8 | No stages, fast stages, slow (warning/critical), failed stage, total boot warning/critical, combined slow+failed |
+| `MemoryLeakRuleTests` | 7 | Flat heap, too few frames, slow growth below threshold, moderate/rapid growth, editor medium confidence, standalone high confidence |
+| `AssetLoadRuleTests` | 6 | No loads, fast loads, one slow (info), many slow (warning), critical load, slowest asset tracking |
+| `NetworkLatencyRuleTests` | 8 | No events, healthy network, with errors, high/low error rate, high/critical latency, throughput |
+| `RenderingEfficiencyRuleTests` | 10 | No profiler data, low/high/critical draw calls, high/critical set-pass, high/critical triangles, editor baseline subtraction, editor triangle confidence |
+| `CPUvsGPUBottleneckRuleTests` | 9 | Too few frames, both under, no GPU data, GPU/CPU bound, both overloaded, severe GPU critical, moderate warning, editor env note |
+| `AnalysisEngineTests` | 8 | Default rules count (8), custom rule registration, empty session, frame drop finding, summary metrics, synthesis production, custom rule in report, grades computed |
+| `CorrelationEngineTests` | 10 | No/null findings, GC+frame drop overlap/no-overlap, leak+GC, GPU+triangles, CPU+draw calls, boot+assets, pervasive GC |
+| `ReportSynthesizerTests` | 6 | Healthy summary, critical actions, correlation-driven priority, bottleneck with correlation, warnings-only medium impact, correlations stored |
 
-Full pipeline, LLM round-trip, report comparison workflows, correlation+synthesis.
-See [study-test-plan.md](../study-test-plan.md) sections 4.1–4.4.
+### P2b: LLM Prompt Builder Tests (32 tests — DONE)
+
+Prompt construction for all API surfaces.
+
+| Test Class | Count | What It Covers |
+|-----------|-------|---------------|
+| `LLMPromptBuilderTests` | 22 | System prompt with/without additional context, Ask Doctor prompt, user prompt sections (session metadata, frame summary, memory trajectory, boot pipeline, asset loads, profiler markers, active scripts with namespaces, console logs, pre-analysis, environment/editor context, GPU elision, scene census trivial component filtering), profiler markers section, clipboard prompt, null handling |
+| `LLMPromptBuilderMcpTests` | 10 | MCP suspect check (active scripts, findings, profiling summary, console logs), report correction (audit instructions, profiling data, numbered findings), MCP correction (two phases, report to verify, null report handling) |
+
+### P3: Integration Tests (17 tests — DONE)
+
+Full pipeline flows exercising multiple components together.
+
+| Test Class | Count | What It Covers |
+|-----------|-------|---------------|
+| `PipelineIntegrationTests` | 17 | GC+frame drop correlation pipeline, memory leak+GC correlation, healthy session grade A, severely degraded grade F, multi-category grading, report comparison (improved metrics, fixed/new findings, same-session no delta), prompt generation from engine output (user prompt, MCP suspect check, clipboard, report correction), full pipeline with all data sources, editor session context, synthesis structure verification |
 
 ## Key Test Helpers
 
