@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(powershell -ExecutionPolicy Bypass -File .specify/scripts/powershell/create-new-feature.ps1 -Json -Number 1 -ShortName \"rich-diagnostics-ui\" \"DrWario v2.0 rich diagnostics UI with charts, tables, code links, deeper profiling\")",
-      "mcp__unityMCP__read_console"
+      "mcp__unityMCP__read_console",
+      "Bash(xargs wc -l)",
+      "Bash(grep -n \"using UnityEngine\\\\|using UnityEditor\\\\|using Unity\" /d/ware/drwario/Editor/Analysis/Rules/*.cs)",
+      "mcp__unityMCP__create_script"
     ]
   }
 }

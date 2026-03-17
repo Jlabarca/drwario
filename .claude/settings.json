@@ -6,7 +6,9 @@
       "Bash(gh api repos/github/spec-kit/readme --jq '.content')",
       "Bash(uv --version)",
       "Bash(pip --version)",
-      "Bash(uv tool install specify-cli --from git+https://github.com/github/spec-kit.git)"
+      "Bash(uv tool install specify-cli --from git+https://github.com/github/spec-kit.git)",
+      "mcp__unityMCP__run_tests",
+      "mcp__unityMCP__get_test_job"
     ]
   }
 }
